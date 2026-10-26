@@ -5,10 +5,10 @@
 //! [`ResourceGraph::claim`], so a board that holds one cannot have a pin
 //! conflict: validation and construction are the same act.
 //!
-//! The graph is cut to what one element needs. Buses (`add_bus`, `bus`,
+//! The graph is cut to what the elements need. Buses (`add_bus`, `bus`,
 //! `used_by`) return in phase 3, shared peripherals (`claim_peripheral`) with
 //! the elements that share them, and the [`OwnerKind`] set grows one variant
-//! per element (`Button` with `<button>`, the bus kinds with their buses).
+//! per element (the bus kinds with their buses).
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -128,7 +128,8 @@ impl PinUse {
 pub enum OwnerKind {
     Gpio,
     Led,
-    // `Button` returns with `<button>`, the bus kinds with their buses.
+    Button,
+    // The bus kinds arrive with their buses.
 }
 
 impl OwnerKind {
@@ -137,6 +138,7 @@ impl OwnerKind {
         match self {
             OwnerKind::Gpio => "gpio",
             OwnerKind::Led => "led",
+            OwnerKind::Button => "button",
         }
     }
 }
@@ -337,6 +339,7 @@ macro_rules! component_enum {
 
 component_enum! {
     Led(crate::components::led::Led),
+    Button(crate::components::button::Button),
 }
 
 /// Everything the emitters need: the project settings, the resources it owns

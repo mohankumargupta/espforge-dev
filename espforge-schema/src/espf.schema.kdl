@@ -1,11 +1,11 @@
 // The schema (KDL v2): the single source of truth for what an ESPF file may
 // contain and for the build options it can turn on.
 //
-// This is the phase-1 file cut to what is implemented: the five required
-// sections (`gpio` and `led` are the only elements outside `espforge`), and
+// This is the file cut to what is implemented: the five required sections
+// (`gpio`, `led` and `button` are the only elements outside `espforge`), and
 // the options helloworld's Cargo.toml depends on. An element is in this file
-// if and only if it is implemented; `button` and the rest arrive with their
-// implementations.
+// if and only if it is implemented; buses, services and devices arrive with
+// their implementations.
 //
 //   section "name" { summary ".."; description ".." }
 //   element "tag" section="name" {
@@ -113,6 +113,19 @@ element "led" section="components" {
     // sections (three of them may be empty).
     example "esp32c3, blocking" "# espforge\n  <project name=\"blink\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio18\" pin=\"18\" direction=\"output\" />\n# components\n  <led id=\"red_led\" gpio=\"$gpio18\" />\n# devices\n# services\n"
     example "active low" "# espforge\n  <project name=\"blink\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio18\" pin=\"18\" direction=\"output\" />\n# components\n  <led id=\"red_led\" gpio=\"$gpio18\" active_low=\"true\" />\n# devices\n# services\n"
+    see_also "peripherals/gpio"
+}
+
+element "button" section="components" {
+    summary "A push button on a GPIO input"
+    description #"A component over <gpio>: gpio="$<gpio id>" must name an input pin."#
+    attr "id" kind="ident" required=#true
+    attr "gpio" kind="ref" to="gpio" required=#true
+    attr "pull_up" kind="bool" default="false" {
+        help "true when the pin has an external pull-up (button to GND)."
+    }
+    example "esp32c3, blocking" "# espforge\n  <project name=\"button\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />\n# components\n  <button id=\"button\" gpio=\"$gpio9\" />\n# devices\n# services\n"
+    example "pull-up" "# espforge\n  <project name=\"button\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />\n# components\n  <button id=\"button\" gpio=\"$gpio9\" pull_up=\"true\" />\n# devices\n# services\n"
     see_also "peripherals/gpio"
 }
 

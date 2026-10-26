@@ -1073,16 +1073,16 @@ options {
         ] {
             assert!(schema.section_named(section).is_some(), "{section}");
         }
-        assert_eq!(schema.elements.len(), 7);
+        assert_eq!(schema.elements.len(), 8);
         for tag in [
-            "project", "chip", "runtime", "console", "options", "gpio", "led",
+            "project", "chip", "runtime", "console", "options", "gpio", "led", "button",
         ] {
             assert!(schema.element(tag).is_some(), "{tag}");
         }
-        // The two element-bearing sections have one element each; devices and
-        // services are still empty.
+        // `gpio` is the only peripheral; `led` and `button` are the components;
+        // devices and services are still empty.
         assert_eq!(schema.elements_in("peripherals").count(), 1);
-        assert_eq!(schema.elements_in("components").count(), 1);
+        assert_eq!(schema.elements_in("components").count(), 2);
         assert_eq!(schema.elements_in("devices").count(), 0);
         assert_eq!(schema.elements_in("services").count(), 0);
 
@@ -1109,6 +1109,22 @@ options {
             }
         );
         assert!(gpio_attr.required);
+
+        let button = schema.element("button").unwrap();
+        assert_eq!(button.section, "components");
+        assert_eq!(button.see_also, ["peripherals/gpio"]);
+        let button_gpio = button.attrs.iter().find(|a| a.name == "gpio").unwrap();
+        assert_eq!(
+            button_gpio.kind,
+            AttrKind::Ref {
+                to: vec!["gpio".into()]
+            }
+        );
+        assert!(button_gpio.required);
+        let pull_up = button.attrs.iter().find(|a| a.name == "pull_up").unwrap();
+        assert_eq!(pull_up.kind, AttrKind::Bool);
+        assert!(!pull_up.required);
+        assert_eq!(pull_up.default.as_deref(), Some("false"));
         // Only the options helloworld depends on.
         let names: Vec<&str> = schema.options.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(

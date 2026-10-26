@@ -82,6 +82,8 @@ codes! {
 
     /// An `<led>` that cannot be built.
     COMPONENT_INVALID_LED = "E0601";
+    /// A `<button>` that cannot be built.
+    COMPONENT_INVALID_BUTTON = "E0602";
     /// A component tag no element implements.
     COMPONENT_UNSUPPORTED = "E0606";
     /// An `<led>` referencing a gpio id that does not exist.
@@ -91,6 +93,8 @@ codes! {
 
     /// A pin claimed by two elements of the same kind.
     CONFLICT_PIN_USED = "E0702";
+    /// One element needs an input and the other an output.
+    CONFLICT_DIRECTION = "E0703";
 }
 
 #[cfg(test)]
@@ -133,7 +137,10 @@ mod tests {
             let number = &code.as_str()[1..];
             let n: u32 = number.parse().unwrap();
             assert!(
-                matches!(n, 101..=104 | 201..=209 | 301 | 302 | 306..=315 | 501..=503 | 601 | 606 | 608 | 609 | 702),
+                matches!(
+                    n,
+                    101..=104 | 201..=209 | 301 | 302 | 306..=315 | 501..=503 | 601 | 602 | 606 | 608 | 609 | 702 | 703
+                ),
                 "{} is outside the codes this slice defines",
                 code.as_str()
             );

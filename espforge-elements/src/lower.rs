@@ -126,7 +126,9 @@ mod tests {
     fn blink_lowers_to_one_led_on_pin_18() {
         let board = lower_src(BLINK).expect("blink lowers");
         assert_eq!(board.components.len(), 1);
-        let Component::Led(led) = &board.components[0];
+        let Component::Led(led) = &board.components[0] else {
+            panic!("blink lowers to a led");
+        };
         assert_eq!(led.id.raw, "red_led");
         assert_eq!(led.id.rust_name(), "red_led");
         assert_eq!(led.pin.pin(), Pin(18));
