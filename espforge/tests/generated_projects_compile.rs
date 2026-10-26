@@ -27,30 +27,43 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Generate `example` into a scratch dir and `cargo check` it, with the
+/// runtime from this checkout and the shared target dir.
+fn check_example(example: &str, runtime: &Path, target_dir: &Path) {
+    let scratch = tempfile::tempdir().expect("create scratch dir");
+    let out = scratch.path().join("out");
+    let source = resolve_source(None, Some(example)).expect("embedded example");
+    generate_with(
+        &source,
+        &out,
+        &Overrides::default(),
+        Some(runtime.to_path_buf()),
+    )
+    .unwrap_or_else(|e| panic!("generate {example}: {e:?}"));
+
+    let output = Command::new("cargo")
+        .args(["check", "--quiet"])
+        .current_dir(&out)
+        .env("CARGO_TARGET_DIR", target_dir)
+        .output()
+        .expect("run cargo check");
+    assert!(
+        output.status.success(),
+        "generated {example} does not compile:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 #[ignore = "spawns cargo; needs the example's target installed"]
-fn helloworld_compiles() {
+fn helloworld_and_blink_compile() {
     let root = workspace_root();
     let runtime = root.join("espforge-runtime");
     // One shared target dir, so repeat runs only rebuild what changed.
     let target_dir = root.join("target").join("generated-check");
 
-    let scratch = tempfile::tempdir().expect("create scratch dir");
-    let out = scratch.path().join("out");
-    let source = resolve_source(None, Some("01.Basics/helloworld")).expect("embedded example");
-    generate_with(&source, &out, &Overrides::default(), Some(runtime))
-        .expect("generate 01.Basics/helloworld");
-
-    let output = Command::new("cargo")
-        .args(["check", "--quiet"])
-        .current_dir(&out)
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()
-        .expect("run cargo check");
-    assert!(
-        output.status.success(),
-        "generated helloworld does not compile:\n{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for example in ["01.Basics/helloworld", "01.Basics/blink"] {
+        check_example(example, &runtime, &target_dir);
+    }
 }
