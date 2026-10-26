@@ -72,6 +72,25 @@ codes! {
     VALUE_KEY_KIND = "E0314";
     /// A required attribute is absent.
     VALUE_MISSING_ATTRIBUTE = "E0315";
+
+    /// A peripheral tag no element implements.
+    PERIPHERAL_UNSUPPORTED = "E0501";
+    /// `<gpio pin>` that is not a number.
+    GPIO_INVALID_PIN = "E0502";
+    /// `<gpio direction>` outside `input`/`output`.
+    GPIO_INVALID_DIRECTION = "E0503";
+
+    /// An `<led>` that cannot be built.
+    COMPONENT_INVALID_LED = "E0601";
+    /// A component tag no element implements.
+    COMPONENT_UNSUPPORTED = "E0606";
+    /// An `<led>` referencing a gpio id that does not exist.
+    COMPONENT_UNKNOWN_GPIO = "E0608";
+    /// A led on an input pin.
+    COMPONENT_WRONG_DIRECTION = "E0609";
+
+    /// A pin claimed by two elements of the same kind.
+    CONFLICT_PIN_USED = "E0702";
 }
 
 #[cfg(test)]
@@ -114,7 +133,7 @@ mod tests {
             let number = &code.as_str()[1..];
             let n: u32 = number.parse().unwrap();
             assert!(
-                matches!(n, 101..=104 | 201..=209 | 301 | 302 | 306..=315),
+                matches!(n, 101..=104 | 201..=209 | 301 | 302 | 306..=315 | 501..=503 | 601 | 606 | 608 | 609 | 702),
                 "{} is outside the codes this slice defines",
                 code.as_str()
             );

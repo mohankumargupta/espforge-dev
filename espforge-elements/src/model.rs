@@ -277,19 +277,66 @@ impl ResourceGraph {
     }
 }
 
-/// One lowerable component.
-///
-/// Zero variants in this step: `match`ing on it proves no component can reach
-/// an emitter yet. `Led` is the first variant and arrives with its element.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Component {}
+/// The `direction` a `<gpio>` declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Output,
+    Input,
+}
 
-impl Component {
-    /// The component's id. With no variants this can never be called; the
-    /// empty `match` is what proves it.
-    pub fn id(&self) -> &Ident {
-        match *self {}
-    }
+/// A lowered `<gpio>`: an id, a pin, and the declared direction, if any.
+///
+/// It claims nothing; the first component that uses the pin does, as in the
+/// legacy lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpioDecl {
+    pub id: Ident,
+    pub pin: u8,
+    pub direction: Option<Direction>,
+}
+
+/// One line per component variant generates [`Component::id`] and the
+/// [`Lowered`](crate::Lowered) forwarding, so adding a component is its own
+/// file plus its own line here.
+macro_rules! component_enum {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        /// A component in the board.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum Component {
+            $($variant($ty)),*
+        }
+
+        impl Component {
+            /// The component's id.
+            pub fn id(&self) -> &Ident {
+                match self {
+                    $(Component::$variant(c) => crate::element::Lowered::id(c),)*
+                }
+            }
+        }
+
+        impl crate::element::Lowered for Component {
+            fn id(&self) -> &Ident {
+                self.id()
+            }
+
+            fn emit(&self, board: &Board, cx: &mut crate::element::EmitCx) {
+                match self {
+                    $(Component::$variant(c) => c.emit(board, cx),)*
+                }
+            }
+
+            fn overlay_attr(&self, attr: &str) -> Option<String> {
+                match self {
+                    $(Component::$variant(c) => c.overlay_attr(attr),)*
+                }
+            }
+        }
+    };
+}
+
+component_enum! {
+    Led(crate::components::led::Led),
 }
 
 /// Everything the emitters need: the project settings, the resources it owns

@@ -41,6 +41,7 @@ clap = { version = "4", features = ["derive"] }
 include_dir = { version = "0.7.4", features = ["glob"] }
 esp-metadata-generated = { version = "0.5.3", features = ["build-script"] }
 tempfile = "3"
+linkme = "0.3.37"
 
 # Workspace crates, so members declare them with `{ workspace = true }`
 # instead of repeating a relative path.

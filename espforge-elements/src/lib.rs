@@ -8,7 +8,12 @@
 
 pub mod attrs;
 pub mod chips;
+pub mod components;
 pub mod core;
+pub mod element;
+pub mod lower;
+pub mod peripherals;
+pub mod registry;
 
 /// One `Attrs` struct per element in `espf.schema.kdl`, written by `build.rs`.
 ///
@@ -22,14 +27,17 @@ pub mod model;
 pub mod options;
 
 pub use core::core_from_section;
+pub use element::{Element, EmitCx, LowerCx, Lowered, Reported};
 pub use espforge_schema::{Compat, Kind, OptValue, OptionDef, Requires, Schema};
+pub use lower::lower;
 pub use model::{
-    Board, Claim, ClaimedPin, Component, Conflict, ConflictKind, Console, Ident, Meta, Owner,
-    OwnerKind, Pin, PinUse, ResourceGraph, Runtime,
+    Board, Claim, ClaimedPin, Component, Conflict, ConflictKind, Console, Direction, GpioDecl,
+    Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime,
 };
 pub use options::{
     Answer, Answers, DerivedInputs, Origin, Resolved, ResolvedOptions, Why, resolve, resolve_with,
 };
+pub use registry::elements;
 
 #[cfg(test)]
 mod tests {

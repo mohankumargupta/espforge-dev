@@ -8,7 +8,7 @@ use espf::diag::junk_diagnostics;
 use espf::parser::{Parsed, parse_espf};
 use espforge_diagnostics::{Diagnostic, Diagnostics};
 use espforge_elements::{
-    Answers, DerivedInputs, Meta, ResolvedOptions, core_from_section, resolve,
+    Answers, Board, DerivedInputs, Meta, ResolvedOptions, core_from_section, lower, resolve,
 };
 use espforge_schema::schema;
 
@@ -64,6 +64,8 @@ pub struct Checked<'a> {
     /// Option answers after flag overrides.
     pub answers: Answers,
     pub resolved: ResolvedOptions,
+    /// The lowered hardware: pins claimed and components built.
+    pub board: Board,
     /// `note: ...` lines for flags that changed something.
     pub notes: Vec<String>,
 }
@@ -97,11 +99,19 @@ pub fn validate<'a>(src: &'a str, overrides: &Overrides) -> Result<Checked<'a>, 
     // 4. Resolve against the (possibly overridden) answers.
     let resolved = resolve(&meta, &answers, &derived)?;
 
+    // 5. Lower the hardware onto the board, collecting every problem.
+    let board = lower(
+        meta.clone(),
+        &parsed.sections["peripherals"],
+        &parsed.sections["components"],
+    )?;
+
     Ok(Checked {
         parsed,
         meta,
         answers,
         resolved,
+        board,
         notes,
     })
 }
@@ -116,6 +126,20 @@ mod tests {
             .content
     }
 
+    /// The blink example's source, before it is embedded in B7: it has no
+    /// `<console>` and no `<options>` element, so it must resolve the same
+    /// defaults helloworld spells out.
+    const BLINK: &str = "# espforge\n\
+        \x20 <project name=\"blink\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"blocking\" />\n\
+        # peripherals\n\
+        \x20 <gpio id=\"gpio18\" pin=\"18\" direction=\"output\" />\n\
+        # components\n\
+        \x20 <led id=\"red_led\" gpio=\"$gpio18\" />\n\
+        # devices\n\
+        # services\n";
+
     #[test]
     fn the_helloworld_header_validates() {
         let c = validate(hello(), &Overrides::default())
@@ -123,6 +147,27 @@ mod tests {
             .expect("hello validates");
         assert!(c.notes.is_empty());
         assert_eq!(c.meta.chip, "esp32c3");
+        assert!(c.resolved.is_on("unstable-hal"));
+        assert!(c.resolved.is_on("alloc"));
+        assert!(c.resolved.is_on("wokwi"));
+        assert!(!c.resolved.is_on("embassy"));
+    }
+
+    #[test]
+    fn blink_validates_to_a_board_with_one_component() {
+        let c = validate(BLINK, &Overrides::default())
+            .ok()
+            .expect("blink validates");
+        assert_eq!(c.board.components.len(), 1);
+        assert_eq!(c.board.components[0].id().rust_name(), "red_led");
+        assert!(
+            c.board
+                .resources
+                .claim_of(espforge_elements::Pin(18))
+                .is_some()
+        );
+        // Same defaults as helloworld, which spells them out.
+        assert_eq!(c.meta.console, espforge_elements::Console::Uart);
         assert!(c.resolved.is_on("unstable-hal"));
         assert!(c.resolved.is_on("alloc"));
         assert!(c.resolved.is_on("wokwi"));

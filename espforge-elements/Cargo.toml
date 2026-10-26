@@ -19,3 +19,6 @@ espf = { workspace = true }
 espforge-diagnostics = { workspace = true }
 espforge-schema = { workspace = true }
 esp-metadata-generated = { workspace = true }
+linkme = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }

@@ -92,14 +92,8 @@ pub fn write_checked(
         .collect();
     let app = crate::source::app_logic(source).map_err(ProjectError::User)?;
 
-    let board = espforge_elements::Board {
-        meta: checked.meta.clone(),
-        resources: espforge_elements::ResourceGraph::default(),
-        components: Vec::new(),
-    };
-
     let generated = espforge_emit::generate_from_board(
-        &board,
+        &checked.board,
         &checked.meta,
         &checked.resolved,
         &runtime,

@@ -86,14 +86,16 @@ fn resolve_token(token: &str, file: &str, board: &Board, chip: &Chip) -> Result<
     // A component's `.pin` is resolved through its `Lowered` implementation.
     // This slice has no component variants, so the lookup can never match and
     // every `.pin` token is an unknown placeholder.
-    let Some(component) = board
+    let Some(_component) = board
         .components
         .iter()
         .find(|c| c.id().raw == name || c.id().rust_name() == name)
     else {
         return Err(OverlayError::unknown(file, token).into());
     };
-    match *component {}
+    // The component lookup lands in the next step, when `overlay_attr` is
+    // consulted for every supported attribute.
+    Err(OverlayError::unknown(file, token).into())
 }
 
 #[cfg(test)]

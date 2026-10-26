@@ -99,35 +99,19 @@ fn generated(board: &Board, _meta: &Meta) -> Result<String> {
     Ok(text)
 }
 
-/// Fill the `Components` fields and initialisers, one arm per variant.
-///
-/// This slice's `Component` has no variants, so the loop body is empty; `led`
-/// adds an arm here and the loop already walks the board.
+/// Fill the `Components` fields and initialisers through the elements' own
+/// `Lowered::emit`. The next step wires this to [`espforge_elements::EmitCx`];
+/// until then a component exists but the golden still has none.
 fn collect_components(
-    board: &Board,
+    _board: &Board,
     _fields: &mut Vec<TokenStream>,
     _inits: &mut Vec<TokenStream>,
 ) {
-    for component in &board.components {
-        match *component {}
-    }
 }
 
 /// The `SAFETY` notes emitted around the unsafe moves.
-///
-/// With no components there is nothing to justify yet; `led` adds its note
-/// here, next to the field it emits.
-fn safety_comments(board: &Board) -> Result<Vec<Comment>> {
-    let mut comments = Vec::new();
-    push_safety_comments(board, &mut comments)?;
-    Ok(comments)
-}
-
-fn push_safety_comments(board: &Board, _comments: &mut Vec<Comment>) -> Result<()> {
-    for component in &board.components {
-        match *component {}
-    }
-    Ok(())
+fn safety_comments(_board: &Board) -> Result<Vec<Comment>> {
+    Ok(Vec::new())
 }
 
 fn lib(meta: &Meta) -> Result<String> {
