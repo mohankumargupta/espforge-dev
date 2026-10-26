@@ -178,6 +178,7 @@ mod tests {
     fn board(meta: &Meta) -> Board {
         Board {
             meta: meta.clone(),
+            resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
         }
     }

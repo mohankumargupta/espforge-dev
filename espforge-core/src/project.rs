@@ -94,6 +94,7 @@ pub fn write_checked(
 
     let board = espforge_elements::Board {
         meta: checked.meta.clone(),
+        resources: espforge_elements::ResourceGraph::default(),
         components: Vec::new(),
     };
 

@@ -86,6 +86,7 @@ mod tests {
         let opts = resolve(&meta, &Answers::empty(0..0), &DerivedInputs::default()).unwrap();
         let board = Board {
             meta: meta.clone(),
+            resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
         };
         (board, meta, opts)

@@ -110,6 +110,7 @@ mod tests {
                 runtime: Runtime::Blocking,
                 console: Console::Uart,
             },
+            resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
         }
     }

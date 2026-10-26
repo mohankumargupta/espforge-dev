@@ -13,7 +13,10 @@ pub mod options;
 
 pub use core::core_from_section;
 pub use espforge_schema::{Compat, Kind, OptValue, OptionDef, Requires, Schema};
-pub use model::{Board, Component, Console, Ident, Meta, Runtime};
+pub use model::{
+    Board, Claim, ClaimedPin, Component, Conflict, ConflictKind, Console, Ident, Meta, Owner,
+    OwnerKind, Pin, PinUse, ResourceGraph, Runtime,
+};
 pub use options::{
     Answer, Answers, DerivedInputs, Origin, Resolved, ResolvedOptions, Why, resolve, resolve_with,
 };

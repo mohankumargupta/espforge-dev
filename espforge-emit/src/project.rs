@@ -121,6 +121,7 @@ mod tests {
         let case = case("esp32c3", Runtime::Blocking, true, &[], &[]);
         let board = Board {
             meta: case.meta.clone(),
+            resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
         };
         (board, case.opts)
