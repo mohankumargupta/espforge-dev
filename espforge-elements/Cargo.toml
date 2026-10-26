@@ -1,0 +1,15 @@
+[package]
+name = "espforge-elements"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+espf = { workspace = true }
+espforge-diagnostics = { workspace = true }
+espforge-schema = { workspace = true }
+esp-metadata-generated = { workspace = true }

@@ -1,0 +1,25 @@
+[package]
+name = "espforge-core"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[dependencies]
+espf = { workspace = true }
+espforge-bindings = { workspace = true }
+espforge-diagnostics = { workspace = true }
+espforge-emit = { workspace = true }
+espforge_examples = { workspace = true }
+espforge-hardware = { workspace = true }
+espforge-model = { workspace = true }
+espforge-options = { workspace = true }
+anyhow = "1"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

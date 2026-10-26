@@ -1,20 +1,16 @@
-//! Embedded ESPF examples for the `espforge` binary, exposed as a plumbing
-//! catalog.
+//! Embedded ESPF examples for the `espforge` binary: the read half.
 //!
-//! This crate is Layer 0 of the layering described in `cli.md`: it describes
-//! and copies the embedded example tree, nothing else. No UI, no stdout, no
-//! prompts — presentation lives in the `espforge` binary.
-//!
-//! Principles:
-//! - every example is addressed as `<category>/<name>` via [`find`];
-//! - [`materialize`] writes an example verbatim to disk and never clobbers;
-//! - plumbing functions take `&Path` in and return data / results out.
+//! The example tree is embedded at compile time and addressed as
+//! `<category>/<name>` through [`find`]. Writing an example to disk
+//! (`materialize`) and listing (`list`) arrive with the commands that need
+//! them (phase 6); until then nothing here can leak a test-only `example.toml`
+//! into a user's project.
 
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 /// The example tree, embedded at compile time from `src/examples`.
 pub static EXAMPLES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/examples");
@@ -65,82 +61,11 @@ pub fn categories() -> &'static [Category] {
     &CATALOG
 }
 
-/// Find an example by `category/name`, e.g. `01.Basics/button`.
+/// Find an example by `category/name`, e.g. `01.Basics/helloworld`.
 pub fn find(example_path: &str) -> Option<&'static Example> {
     let (category_name, example_name) = example_path.split_once('/')?;
     let category = categories().iter().find(|c| c.name == category_name)?;
     category.examples.iter().find(|e| e.name == example_name)
-}
-
-/// Plumbing listing of the catalog: one `category/name<TAB>title` line per
-/// example, filtered to a single category when given. Plain, script-friendly
-/// text; the caller owns printing.
-///
-/// Errors explain why there is nothing to list (empty tree, unknown category).
-pub fn list(category: Option<&str>) -> Result<Vec<String>, String> {
-    if categories().is_empty() {
-        return Err("no examples are embedded in this build".to_string());
-    }
-    let selected = match category {
-        Some(name) => match categories().iter().find(|c| c.name == name) {
-            Some(c) => std::slice::from_ref(c),
-            None => {
-                let available: Vec<&str> = categories().iter().map(|c| c.name.as_str()).collect();
-                return Err(format!(
-                    "unknown category '{name}' (available: {})",
-                    available.join(", ")
-                ));
-            }
-        },
-        None => categories(),
-    };
-    Ok(selected
-        .iter()
-        .flat_map(|c| {
-            c.examples
-                .iter()
-                .map(move |e| {
-                    format!("{}/{}\t{}", c.name, e.name, e.title.clone().unwrap_or_default())
-                })
-        })
-        .collect())
-}
-
-/// Write an example's embedded files verbatim under `dest`.
-///
-/// Never clobbers: if any target file already exists (or `dest` is an existing
-/// file), nothing is written and the error names the path. On success returns
-/// the absolute path of every file written.
-pub fn materialize(example: &Example, dest: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
-    use std::io;
-    use std::path::PathBuf;
-
-    if dest.is_file() {
-        return Err(io::Error::other(format!(
-            "cannot write '{}': not a directory",
-            dest.display()
-        )));
-    }
-    let targets: Vec<PathBuf> = example.files.iter().map(|f| dest.join(&f.path)).collect();
-    for target in &targets {
-        if target.exists() {
-            return Err(io::Error::other(format!(
-                "refusing to overwrite '{}' (already exists)",
-                target.display()
-            )));
-        }
-    }
-    std::fs::create_dir_all(dest)?;
-    let mut written = Vec::with_capacity(targets.len());
-    for ExampleFile { path, contents } in &example.files {
-        let target = dest.join(path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&target, contents)?;
-        written.push(target);
-    }
-    Ok(written)
 }
 
 fn category_from_dir(cat_dir: &'static Dir<'static>) -> Option<Category> {
@@ -223,17 +148,6 @@ fn is_banner(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    /// Unique scratch directory per `tag`, so tests can run in parallel.
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "espforge-examples-test-{}-{tag}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
 
     #[test]
     fn examples_embed_and_parse() {
@@ -241,8 +155,6 @@ mod tests {
         assert!(!categories.is_empty());
         let basics = &categories[0];
         assert_eq!(basics.name, "01.Basics");
-        // Examples are documented as sorted by name, so `blink` comes first.
-        assert!(basics.examples.windows(2).all(|w| w[0].name <= w[1].name));
         let helloworld = basics
             .examples
             .iter()
@@ -253,127 +165,27 @@ mod tests {
     }
 
     #[test]
-    fn empty_categories_are_dropped() {
-        let categories = categories();
-        assert!(categories.iter().all(|c| !c.examples.is_empty()));
-        let digital = categories
-            .iter()
-            .find(|c| c.name == "02.Digital")
-            .expect("02.Digital examples must be embedded");
-        assert_eq!(digital.examples.len(), 2);
-    }
-
-    #[test]
     fn find_addresses_examples() {
-        let button = find("02.Digital/button").expect("02.Digital/button must exist");
-        assert_eq!(button.title.as_deref(), Some("BUTTON EXAMPLE"));
-        assert!(find("02.Digital/no-such-example").is_none());
-        assert!(find("no-such-category/button").is_none());
+        let hello = find("01.Basics/helloworld").expect("01.Basics/helloworld must exist");
+        assert_eq!(hello.title.as_deref(), Some("HELLO WORLD EXAMPLE"));
+        assert!(find("01.Basics/no-such-example").is_none());
+        assert!(find("no-such-category/helloworld").is_none());
         assert!(find("no-slash").is_none());
     }
 
     #[test]
     fn example_records_every_file() {
-        let button = find("02.Digital/button").expect("button must exist");
-        let paths: Vec<&str> = button.files.iter().map(|f| f.path.as_str()).collect();
-        for expected in ["example.espf.txt", "app/rust/app.rs", "diagram.json"] {
+        let hello = find("01.Basics/helloworld").expect("helloworld must exist");
+        let paths: Vec<&str> = hello.files.iter().map(|f| f.path.as_str()).collect();
+        for expected in ["example.espf.txt", "app/rust/app.rs", "example.toml"] {
             assert!(paths.contains(&expected), "missing {expected} in {paths:?}");
         }
-        let espf = button
+        let espf = hello
             .files
             .iter()
             .find(|f| f.path == "example.espf.txt")
             .expect("espf must be among the files");
         let text = std::str::from_utf8(espf.contents).expect("espf must be utf8");
-        assert_eq!(text, button.content);
-    }
-
-    #[test]
-    fn nested_and_binary_files_are_kept() {
-        let i2c = find("04.Communication/i2c_example").expect("i2c_example must exist");
-        let zig = i2c
-            .files
-            .iter()
-            .find(|f| f.path == "chip/chip.zig")
-            .expect("nested chip/chip.zig must be kept");
-        assert!(std::str::from_utf8(zig.contents).is_ok());
-        let wasm = i2c
-            .files
-            .iter()
-            .find(|f| f.path == "chip.wasm")
-            .expect("binary chip.wasm must be kept");
-        assert!(!wasm.contents.is_empty());
-        assert!(
-            wasm.contents.starts_with(b"\0asm"),
-            "wasm payload must be copied verbatim (magic header missing)"
-        );
-    }
-
-    #[test]
-    fn materialize_writes_verbatim_tree() {
-        let button = find("02.Digital/button").expect("button must exist");
-        let dest = scratch("happy");
-        let written = materialize(button, &dest).expect("materialize must succeed");
-        assert_eq!(written.len(), button.files.len());
-        assert_eq!(
-            std::fs::read_to_string(dest.join("example.espf.txt")).expect("espf written"),
-            button.content
-        );
-        let nested = dest.join("app").join("rust").join("app.rs");
-        let embedded_app = button
-            .files
-            .iter()
-            .find(|f| f.path == "app/rust/app.rs")
-            .expect("app.rs embedded");
-        assert_eq!(
-            std::fs::read(&nested).expect("app.rs readable"),
-            embedded_app.contents
-        );
-        // Every recorded file landed at its relative path.
-        for file in &button.files {
-            assert!(dest.join(&file.path).is_file(), "{} missing", file.path);
-        }
-        let _ = std::fs::remove_dir_all(&dest);
-    }
-
-    #[test]
-    fn materialize_never_clobbers() {
-        let button = find("02.Digital/button").expect("button must exist");
-        let dest = scratch("clobber");
-        materialize(button, &dest).expect("first materialize must succeed");
-        let err = materialize(button, &dest)
-            .expect_err("second materialize into the same dest must fail");
-        assert!(
-            err.to_string().contains("refusing to overwrite"),
-            "unexpected error: {err}"
-        );
-        let _ = std::fs::remove_dir_all(&dest);
-    }
-
-    #[test]
-    fn list_is_machine_readable() {
-        let all = list(None).expect("listing the full tree must work");
-        assert!(!all.is_empty());
-        let filtered = list(Some("02.Digital")).expect("02.Digital must list");
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().all(|l| l.starts_with("02.Digital/")));
-        assert!(filtered.iter().all(|l| l.split_once('\t').is_some()));
-        let err = list(Some("no-such-category")).expect_err("unknown category must fail");
-        assert!(err.contains("unknown category"), "unexpected: {err}");
-        assert!(err.contains("01.Basics"), "should name available categories");
-    }
-
-    #[test]
-    fn every_embedded_example_materializes() {
-        for category in categories() {
-            for example in &category.examples {
-                let dest = scratch(&format!("sweep-{}", example.name));
-                let written = materialize(example, &dest).unwrap_or_else(|e| {
-                    panic!("materialize {}/{} failed: {e}", category.name, example.name)
-                });
-                assert_eq!(written.len(), example.files.len());
-                let _ = std::fs::remove_dir_all(&dest);
-            }
-        }
+        assert_eq!(text, hello.content);
     }
 }

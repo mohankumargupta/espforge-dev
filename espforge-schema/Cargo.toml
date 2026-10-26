@@ -1,0 +1,12 @@
+[package]
+name = "espforge-schema"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+
+[dependencies]
+kdl = { workspace = true }
