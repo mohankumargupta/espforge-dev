@@ -23,4 +23,5 @@ toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+espforge-schema = { workspace = true }
 espforge_examples = { workspace = true }

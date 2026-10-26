@@ -95,6 +95,14 @@ impl Ident {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Component {}
 
+impl Component {
+    /// The component's id. With no variants this can never be called; the
+    /// empty `match` is what proves it.
+    pub fn id(&self) -> &Ident {
+        match *self {}
+    }
+}
+
 /// Everything the emitters need: the project settings and its components.
 #[derive(Debug, Clone)]
 pub struct Board {
