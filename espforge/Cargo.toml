@@ -13,3 +13,9 @@ espforge-core = { workspace = true }
 espforge-diagnostics = { workspace = true }
 espforge-elements = { workspace = true }
 clap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+toml = { workspace = true }
+espforge_examples = { workspace = true }
+espforge-elements = { workspace = true }
