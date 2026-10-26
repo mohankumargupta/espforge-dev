@@ -66,7 +66,7 @@ pub fn element(tag: &str) -> Option<&'static dyn Element> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use espforge_schema::schema;
+    use espforge_schema::{AttrDef, AttrKind, schema};
 
     #[test]
     fn the_registry_is_not_empty() {
@@ -89,31 +89,171 @@ mod tests {
 
     /// An element must have exactly one implementation: a hand-written
     /// `Element` in the slice, or a `recipe` in the schema — never both, never
-    /// neither.
+    /// neither. Pure, so the "two doors" failure is exercised without adding a
+    /// real element.
+    fn implementation_problem(
+        element: &espforge_schema::Element,
+        hand_written: &[&str],
+    ) -> Option<String> {
+        let registered = hand_written
+            .iter()
+            .filter(|tag| **tag == element.tag.as_str())
+            .count();
+        match (registered, element.recipe.is_some()) {
+            (1, false) | (0, true) => None,
+            (0, false) => Some(format!(
+                "`<{}>` has no implementation: add a `recipe` to its schema block, or \
+                 `espforge-elements/src/{}/{}.rs`",
+                element.tag,
+                element.section,
+                element.tag.replace('-', "_"),
+            )),
+            _ => Some(format!(
+                "`<{}>` has {registered} hand-written implementation(s) and a `recipe`: delete \
+                 `espforge-elements/src/{}/{}.rs`, its schema block already has a `recipe`",
+                element.tag,
+                element.section,
+                element.tag.replace('-', "_"),
+            )),
+        }
+    }
+
     #[test]
     fn every_schema_element_has_exactly_one_implementation() {
         let schema = schema();
-        for schema_element in &schema.elements {
+        let hand_written: Vec<&str> = elements().iter().map(|element| element.tag()).collect();
+        for element in &schema.elements {
             // Only sections that lower have elements; `# espforge` is read by
             // the core reader, not by the registry.
-            if !matches!(
-                schema_element.section.as_str(),
-                "peripherals" | "components"
-            ) {
+            if !matches!(element.section.as_str(), "peripherals" | "components") {
                 continue;
             }
-            let hand_written = elements()
-                .iter()
-                .filter(|element| element.tag() == schema_element.tag)
-                .count();
-            let recipe = usize::from(schema_element.recipe.is_some());
-            assert_eq!(
-                hand_written + recipe,
-                1,
-                "`<{}>` has {hand_written} hand-written implementation(s) and {recipe} recipe(s): \
-                 give it exactly one, so there is nothing to prefer",
-                schema_element.tag,
-            );
+            if let Some(problem) = implementation_problem(element, &hand_written) {
+                panic!("{problem}");
+            }
+        }
+    }
+
+    /// A component with a `recipe` *and* a registered implementation has two
+    /// doors and must be caught, naming the file to delete.
+    #[test]
+    fn a_recipe_beside_a_rust_file_is_refused() {
+        let schema = schema();
+        let led = schema.element("led").expect("`<led>` is a schema element");
+        let problem = implementation_problem(led, &["led"]).expect("two doors is a problem");
+        assert!(
+            problem.contains("delete `espforge-elements/src/components/led.rs`"),
+            "{problem}"
+        );
+        assert!(problem.contains("already has a `recipe`"), "{problem}");
+        // The recipe door alone is the whole implementation.
+        assert!(implementation_problem(led, &[]).is_none());
+    }
+
+    /// An `AttrDef` of `kind`, for the shape predicate's own unit test.
+    fn attr(name: &str, kind: AttrKind) -> AttrDef {
+        AttrDef {
+            name: name.into(),
+            kind,
+            required: false,
+            default: None,
+            help: None,
+            span: 0..0,
+        }
+    }
+
+    /// The shape a recipe describes: an `id`, exactly one `ref` and booleans.
+    fn is_recipe_shaped(attrs: &[AttrDef]) -> bool {
+        let mut idents = 0;
+        let mut refs = 0;
+        for attr in attrs {
+            match attr.kind {
+                AttrKind::Ident => idents += 1,
+                AttrKind::Bool => {}
+                AttrKind::Ref { .. } => refs += 1,
+                _ => return false,
+            }
+        }
+        idents == 1 && refs == 1
+    }
+
+    /// Why a `# components` element that is recipe-shaped but not a recipe is a
+    /// problem, if it is. The predicate has its own unit test below, so the
+    /// failure path is exercised without adding a real element.
+    fn tier_problem(tag: &str, attrs: &[AttrDef], has_recipe: bool) -> Option<String> {
+        (is_recipe_shaped(attrs) && !has_recipe).then(|| {
+            format!(
+                "`<{tag}>` is a recipe component: add `recipe …` to its schema block and delete \
+                 `components/{tag}.rs`"
+            )
+        })
+    }
+
+    #[test]
+    fn a_recipe_shaped_component_without_a_recipe_fails() {
+        let recipe_shaped = [
+            attr("id", AttrKind::Ident),
+            attr(
+                "gpio",
+                AttrKind::Ref {
+                    to: vec!["gpio".into()],
+                },
+            ),
+            attr("active_low", AttrKind::Bool),
+        ];
+        assert!(is_recipe_shaped(&recipe_shaped));
+        assert_eq!(
+            tier_problem("buzzer", &recipe_shaped, false).unwrap(),
+            "`<buzzer>` is a recipe component: add `recipe …` to its schema block and delete \
+             `components/buzzer.rs`"
+        );
+        // A real recipe is not a problem.
+        assert!(tier_problem("buzzer", &recipe_shaped, true).is_none());
+
+        // A bus component with an integer address is out of shape.
+        let bus = [
+            attr("id", AttrKind::Ident),
+            attr(
+                "i2c",
+                AttrKind::Ref {
+                    to: vec!["i2c".into()],
+                },
+            ),
+            attr("address", AttrKind::U32),
+        ];
+        assert!(!is_recipe_shaped(&bus));
+        assert!(tier_problem("screen", &bus, false).is_none());
+
+        // Two refs is not one pin.
+        let two_refs = [
+            attr("id", AttrKind::Ident),
+            attr(
+                "a",
+                AttrKind::Ref {
+                    to: vec!["gpio".into()],
+                },
+            ),
+            attr(
+                "b",
+                AttrKind::Ref {
+                    to: vec!["gpio".into()],
+                },
+            ),
+        ];
+        assert!(!is_recipe_shaped(&two_refs));
+    }
+
+    /// The real schema has to obey the tier: every recipe-shaped component is a
+    /// recipe.
+    #[test]
+    fn every_recipe_shaped_component_declares_a_recipe() {
+        let schema = schema();
+        for element in schema.elements_in("components") {
+            if let Some(problem) =
+                tier_problem(&element.tag, &element.attrs, element.recipe.is_some())
+            {
+                panic!("{problem}");
+            }
         }
     }
 

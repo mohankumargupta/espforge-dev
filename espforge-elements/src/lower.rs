@@ -243,6 +243,20 @@ mod tests {
         );
     }
 
+    /// The unknown-tag list for `# components` walks `registry::element`, so
+    /// the recipe door must show up in it: a component the schema does not know
+    /// is told which components exist.
+    #[test]
+    fn an_unknown_component_names_the_recipe_elements() {
+        let src = BLINK.replace("# components\n", "# components\n  <pwm id=\"pwm0\" />\n");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_UNSUPPORTED);
+        assert_eq!(
+            errors[0].message,
+            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`"
+        );
+    }
+
     #[test]
     fn button_lowers_beside_an_led_and_claims_its_input_pin() {
         let board = lower_src(BUTTON).expect("button lowers");
