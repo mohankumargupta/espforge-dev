@@ -40,6 +40,10 @@ impl Default for Logger {
 /// call site.
 #[cfg(any(target_arch = "riscv32", target_arch = "xtensa"))]
 mod hw {
+    use core::cell::RefCell;
+
+    use esp_hal::gpio::Level;
+
     /// Delay handle stored on the generated `Context`.
     ///
     /// - blocking (default): `delay_ms` blocks via `esp_hal::delay::Delay`.
@@ -72,6 +76,51 @@ mod hw {
     impl Default for Delay {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    /// An LED on a GPIO output.
+    ///
+    /// The `Output` is held behind a `RefCell` so the mutating methods take
+    /// `&self`: the blocking `component!(ctx, led).toggle()` call site keeps
+    /// working, and an embassy task can toggle a shared LED.
+    pub struct Led {
+        pin: RefCell<esp_hal::gpio::Output<'static>>,
+        active_low: bool,
+    }
+
+    impl Led {
+        /// `pin` is the output pin moved in by value. The LED starts *off*:
+        /// an active-low LED is off while the pin reads high.
+        pub fn new(pin: impl esp_hal::gpio::OutputPin + 'static, active_low: bool) -> Self {
+            use esp_hal::gpio::{Output, OutputConfig};
+            let off = if active_low { Level::High } else { Level::Low };
+            Led {
+                pin: RefCell::new(Output::new(pin, off, OutputConfig::default())),
+                active_low,
+            }
+        }
+
+        pub fn on(&self) {
+            let level = if self.active_low {
+                Level::Low
+            } else {
+                Level::High
+            };
+            self.pin.borrow_mut().set_level(level);
+        }
+
+        pub fn off(&self) {
+            let level = if self.active_low {
+                Level::High
+            } else {
+                Level::Low
+            };
+            self.pin.borrow_mut().set_level(level);
+        }
+
+        pub fn toggle(&self) {
+            self.pin.borrow_mut().toggle();
         }
     }
 
