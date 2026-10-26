@@ -10,6 +10,9 @@ repository.workspace = true
 
 [dependencies]
 kdl = { workspace = true }
+# The `recipe` node validates its `invalid=` against `codes::ALL`, so the
+# schema owns a `DiagCode` instead of handing a string downstream.
+espforge-diagnostics = { workspace = true }
 
 [dev-dependencies]
 espf = { workspace = true }

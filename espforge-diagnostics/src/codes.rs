@@ -90,6 +90,9 @@ codes! {
     COMPONENT_UNKNOWN_GPIO = "E0608";
     /// A led on an input pin.
     COMPONENT_WRONG_DIRECTION = "E0609";
+    /// A recipe component that cannot be built (the recipe's default code).
+    /// Legacy component codes stop at `E0614`; this one is free.
+    COMPONENT_INVALID = "E0615";
 
     /// A pin claimed by two elements of the same kind.
     CONFLICT_PIN_USED = "E0702";
@@ -139,7 +142,7 @@ mod tests {
             assert!(
                 matches!(
                     n,
-                    101..=104 | 201..=209 | 301 | 302 | 306..=315 | 501..=503 | 601 | 602 | 606 | 608 | 609 | 702 | 703
+                    101..=104 | 201..=209 | 301 | 302 | 306..=315 | 501..=503 | 601 | 602 | 606 | 608 | 609 | 615 | 702 | 703
                 ),
                 "{} is outside the codes this slice defines",
                 code.as_str()

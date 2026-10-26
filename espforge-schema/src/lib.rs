@@ -26,6 +26,7 @@
 //! [`load`] reports every problem with the byte span of the offending node or
 //! argument; [`schema`] is the embedded copy, parsed once.
 
+use espforge_diagnostics::{DiagCode, codes};
 use kdl::{KdlDocument, KdlEntry, KdlNode};
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -102,8 +103,44 @@ pub struct Element {
     pub examples: Vec<Example>,
     /// Targets of `see_also`, as `section/tag`.
     pub see_also: Vec<String>,
+    /// The `recipe` child, when this element is a component built from a pin
+    /// reference and booleans rather than its own Rust file.
+    pub recipe: Option<Recipe>,
     /// Span of the `element` node in `espf.schema.kdl`.
     pub span: Range<usize>,
+}
+
+/// The `recipe` child of a `# components` element: how to build it from an id,
+/// one pin reference and booleans, with no Rust file of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recipe {
+    /// The element's `attr` of `kind="ref"` that names the referenced element.
+    pub pin: String,
+    /// The direction the referenced element must declare, and the claim's use.
+    pub direction: Direction,
+    /// The Rust type constructed as `new(pin, <bool attrs in schema order>)`.
+    pub runtime: String,
+    /// The `DiagCode` for "cannot be built".
+    pub invalid: DiagCode,
+    /// Span of the `recipe` node in `espf.schema.kdl`.
+    pub span: Range<usize>,
+}
+
+/// Which way a recipe's pin is driven.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Input,
+    Output,
+}
+
+impl Direction {
+    /// The ESPF spelling, as written in `direction=".."`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Direction::Input => "input",
+            Direction::Output => "output",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -502,6 +539,7 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
     let mut attrs = Vec::new();
     let mut examples = Vec::new();
     let mut see_also = Vec::new();
+    let mut recipe_node: Option<&KdlNode> = None;
     for child in children(node) {
         match child.name().value() {
             "summary" | "description" => {
@@ -528,6 +566,13 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
                 }
             }
             "attr" => parse_attr(child, &mut attrs, errors),
+            "recipe" => {
+                if recipe_node.is_some() {
+                    errors.push(err(node_range(child), "`recipe` given twice", "keep one"));
+                } else {
+                    recipe_node = Some(child);
+                }
+            }
             "example" => parse_example(child, &mut examples, errors),
             "see_also" => {
                 for (target, target_span) in positional_strings(child, errors) {
@@ -545,10 +590,14 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
             other => errors.push(err(
                 node_range(child),
                 format!("unknown node `{other}` in element `{tag}`"),
-                "expected summary, description, attr, example or see_also",
+                "expected summary, description, attr, recipe, example or see_also",
             )),
         }
     }
+
+    // Validated after the walk so the recipe can be checked against every
+    // `attr` the element declares, wherever the `recipe` line sits.
+    let recipe = recipe_node.and_then(|node| parse_recipe(node, &tag, &section_name, &attrs, errors));
 
     if summary.is_none() {
         errors.push(err(
@@ -573,8 +622,154 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
         attrs,
         examples,
         see_also,
+        recipe,
         span,
     });
+}
+
+/// Parse and validate the `recipe` child of an element.
+///
+/// Every rule is checked here, with the offending node's span, so a bad recipe
+/// is a load error and never a runtime surprise.
+fn parse_recipe(
+    node: &KdlNode,
+    tag: &str,
+    section: &str,
+    attrs: &[AttrDef],
+    errors: &mut Vec<SchemaError>,
+) -> Option<Recipe> {
+    let span = node_range(node);
+
+    // A recipe is only for components: a peripheral has no pin reference.
+    if section != "components" {
+        errors.push(err(
+            span,
+            "`recipe` is for components",
+            "a peripheral with no pin reference needs an `Element`",
+        ));
+        return None;
+    }
+
+    let Some((pin, _)) = prop(node, "pin", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`recipe` has no `pin`",
+            "name the element's `ref` attribute, e.g. `pin=\"gpio\"`",
+        ));
+        return None;
+    };
+
+    // `pin` must name one of this element's `ref` attributes.
+    if !attrs
+        .iter()
+        .any(|attr| attr.name == pin && matches!(attr.kind, AttrKind::Ref { .. }))
+    {
+        let refs: Vec<String> = attrs
+            .iter()
+            .filter(|attr| matches!(attr.kind, AttrKind::Ref { .. }))
+            .map(|attr| format!("`{}`", attr.name))
+            .collect();
+        errors.push(err(
+            span.clone(),
+            format!("`<{tag}>` has no ref attribute `{pin}`"),
+            format!(
+                "recipe pin must name one of: {}",
+                if refs.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    refs.join(", ")
+                }
+            ),
+        ));
+        return None;
+    }
+
+    let Some((direction_name, direction_span)) = prop(node, "direction", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`recipe` has no `direction`",
+            "write `direction=\"input\"` or `direction=\"output\"`",
+        ));
+        return None;
+    };
+    let direction = match direction_name.as_str() {
+        "input" => Direction::Input,
+        "output" => Direction::Output,
+        _ => {
+            errors.push(err(
+                direction_span,
+                "`direction` must be `input` or `output`",
+                format!("`{direction_name}` is neither"),
+            ));
+            return None;
+        }
+    };
+
+    let Some((runtime, runtime_span)) = prop(node, "runtime", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`recipe` has no `runtime`",
+            "name the Rust type, e.g. `runtime=\"espforge_runtime::Led\"`",
+        ));
+        return None;
+    };
+    if !is_rust_path(&runtime) {
+        errors.push(err(
+            runtime_span,
+            "`runtime` must be a Rust path such as `espforge_runtime::Led`",
+            "segments are identifiers separated by `::`",
+        ));
+        return None;
+    }
+
+    let invalid = match prop(node, "invalid", errors) {
+        Some((code, code_span)) => match codes::ALL.iter().find(|known| known.as_str() == code) {
+            Some(known) => *known,
+            None => {
+                errors.push(err(
+                    code_span,
+                    format!("`{code}` is not a diagnostic code this workspace defines"),
+                    "see espforge-diagnostics/src/codes.rs",
+                ));
+                return None;
+            }
+        },
+        None => codes::COMPONENT_INVALID,
+    };
+
+    // A recipe component is an id, one pin reference and booleans; anything
+    // else needs a hand-written `Element`.
+    for attr in attrs {
+        if attr.name == pin {
+            continue;
+        }
+        if !matches!(attr.kind, AttrKind::Ident | AttrKind::Bool) {
+            errors.push(err(
+                attr.span.clone(),
+                format!("`{tag}.{}` is `{}`", attr.name, attr.kind.display()),
+                "a recipe component is an id, one pin reference and booleans; write an `Element`",
+            ));
+        }
+    }
+
+    Some(Recipe {
+        pin,
+        direction,
+        runtime,
+        invalid,
+        span,
+    })
+}
+
+/// Whether `text` is `ident(::ident)*`: the shape of the runtime path a recipe
+/// splices into generated Rust.
+fn is_rust_path(text: &str) -> bool {
+    !text.is_empty()
+        && text.split("::").all(|segment| {
+            !segment.is_empty()
+                && !segment.starts_with(|c: char| c.is_ascii_digit())
+                && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 fn parse_example(node: &KdlNode, examples: &mut Vec<Example>, errors: &mut Vec<SchemaError>) {
@@ -1258,5 +1453,134 @@ element "led" section="components" {
 "##;
         let errors = load(src).unwrap_err();
         assert!(errors[0].message.contains("names no element"), "{errors:?}");
+    }
+
+    /// A schema with one peripheral and one recipe component over it.
+    const RECIPE: &str = r##"
+section "peripherals" { summary "s"; description "d" }
+section "components" { summary "s"; description "d" }
+element "gpio" section="peripherals" {
+    summary "A pin"
+    attr "id" kind="ident" required=#true
+    attr "pin" kind="pin" required=#true
+    example "minimal" #"<gpio id="g" pin="4" />"#
+}
+element "led" section="components" {
+    summary "An LED"
+    recipe pin="gpio" direction="output" runtime="espforge_runtime::Led" invalid="E0601"
+    attr "id" kind="ident" required=#true
+    attr "gpio" kind="ref" to="gpio" required=#true
+    attr "active_low" kind="bool" default="false"
+    example "minimal" #"<led id="l" gpio="$g" />"#
+}
+"##;
+
+    /// A one-line failure, for tests that only care what went wrong.
+    fn only_message(src: &str) -> String {
+        let errors = load(src).unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        errors[0].message.clone()
+    }
+
+    #[test]
+    fn a_full_recipe_parses_into_for_facts() {
+        let schema = load(RECIPE).unwrap();
+        let recipe = schema.element("led").unwrap().recipe.as_ref().unwrap();
+        assert_eq!(recipe.pin, "gpio");
+        assert_eq!(recipe.direction, Direction::Output);
+        assert_eq!(recipe.runtime, "espforge_runtime::Led");
+        assert_eq!(recipe.invalid, codes::COMPONENT_INVALID_LED);
+        assert!(recipe.span.start > 0 && recipe.span.end > recipe.span.start);
+        // A non-recipe element carries none.
+        assert!(schema.element("gpio").unwrap().recipe.is_none());
+    }
+
+    #[test]
+    fn a_recipe_without_invalid_takes_the_generic_code() {
+        let src = RECIPE.replace(" invalid=\"E0601\"", "");
+        let schema = load(&src).unwrap();
+        let recipe = schema.element("led").unwrap().recipe.as_ref().unwrap();
+        assert_eq!(recipe.invalid, codes::COMPONENT_INVALID);
+        assert_eq!(codes::COMPONENT_INVALID.as_str(), "E0615");
+    }
+
+    #[test]
+    fn a_recipe_outside_components_is_refused() {
+        let src = r##"
+section "peripherals" { summary "s"; description "d" }
+section "components" { summary "s"; description "d" }
+element "gpio" section="peripherals" {
+    summary "A pin"
+    recipe pin="pin" direction="output" runtime="espforge_runtime::Led"
+    attr "id" kind="ident" required=#true
+    attr "pin" kind="pin" required=#true
+    example "minimal" #"<gpio id="g" pin="4" />"#
+}
+"##;
+        assert_eq!(only_message(src), "`recipe` is for components");
+    }
+
+    #[test]
+    fn pin_must_name_a_ref_attribute_and_lists_the_alternatives() {
+        let src = RECIPE.replace("pin=\"gpio\"", "pin=\"nope\"");
+        let errors = load(&src).unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].message, "`<led>` has no ref attribute `nope`");
+        assert_eq!(errors[0].label, "recipe pin must name one of: `gpio`");
+    }
+
+    #[test]
+    fn a_non_ident_non_bool_attribute_is_refused() {
+        let src = RECIPE.replace(
+            "    attr \"active_low\" kind=\"bool\" default=\"false\"\n",
+            "    attr \"active_low\" kind=\"bool\" default=\"false\"\n    attr \"address\" kind=\"u32\"\n",
+        );
+        let errors = load(&src).unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].message, "`led.address` is `u32`");
+        assert!(
+            errors[0].label.contains("write an `Element`"),
+            "{}",
+            errors[0].label
+        );
+    }
+
+    #[test]
+    fn runtime_must_be_a_rust_path() {
+        let src = RECIPE.replace("espforge_runtime::Led", "Led!");
+        assert_eq!(
+            only_message(&src),
+            "`runtime` must be a Rust path such as `espforge_runtime::Led`"
+        );
+        // A trailing `::` is not a path either.
+        let src = RECIPE.replace("espforge_runtime::Led", "espforge_runtime::");
+        assert_eq!(
+            only_message(&src),
+            "`runtime` must be a Rust path such as `espforge_runtime::Led`"
+        );
+    }
+
+    #[test]
+    fn invalid_must_be_a_workspace_code() {
+        let src = RECIPE.replace("invalid=\"E0601\"", "invalid=\"E9999\"");
+        assert_eq!(
+            only_message(&src),
+            "`E9999` is not a diagnostic code this workspace defines"
+        );
+    }
+
+    #[test]
+    fn direction_must_be_input_or_output() {
+        let src = RECIPE.replace("direction=\"output\"", "direction=\"sideways\"");
+        assert_eq!(only_message(&src), "`direction` must be `input` or `output`");
+    }
+
+    #[test]
+    fn a_second_recipe_node_is_refused() {
+        let src = RECIPE.replace(
+            "    recipe pin=\"gpio\" direction=\"output\" runtime=\"espforge_runtime::Led\" invalid=\"E0601\"\n",
+            "    recipe pin=\"gpio\" direction=\"output\" runtime=\"espforge_runtime::Led\" invalid=\"E0601\"\n    recipe pin=\"gpio\" direction=\"output\" runtime=\"espforge_runtime::Led\"\n",
+        );
+        assert_eq!(only_message(&src), "`recipe` given twice");
     }
 }
