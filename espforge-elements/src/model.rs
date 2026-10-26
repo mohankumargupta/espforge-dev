@@ -129,7 +129,6 @@ pub enum OwnerKind {
     Gpio,
     /// A component built from a recipe; carries its schema tag.
     Recipe(&'static str),
-    Button,
     // The bus kinds arrive with their buses.
 }
 
@@ -139,7 +138,6 @@ impl OwnerKind {
         match self {
             OwnerKind::Gpio => "gpio",
             OwnerKind::Recipe(tag) => tag,
-            OwnerKind::Button => "button",
         }
     }
 }
@@ -340,7 +338,6 @@ macro_rules! component_enum {
 
 component_enum! {
     Recipe(crate::components::recipe::RecipeComponent),
-    Button(crate::components::button::Button),
 }
 
 /// Everything the emitters need: the project settings, the resources it owns

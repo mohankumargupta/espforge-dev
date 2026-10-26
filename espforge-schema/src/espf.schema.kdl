@@ -125,6 +125,7 @@ element "led" section="components" {
 element "button" section="components" {
     summary "A push button on a GPIO input"
     description #"A component over <gpio>: gpio="$<gpio id>" must name an input pin."#
+    recipe pin="gpio" direction="input" runtime="espforge_runtime::Button" invalid="E0602"
     attr "id" kind="ident" required=#true
     attr "gpio" kind="ref" to="gpio" required=#true
     attr "pull_up" kind="bool" default="false" {

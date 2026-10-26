@@ -255,12 +255,13 @@ mod tests {
         assert_eq!(led.id.raw, "red_led");
         assert_eq!(led.pin.pin(), Pin(7));
 
-        let Component::Button(button) = &board.components[1] else {
+        let Component::Recipe(button) = &board.components[1] else {
             panic!("the second component is the button");
         };
+        assert_eq!(button.tag, "button");
         assert_eq!(button.id.raw, "button");
         assert_eq!(button.pin.pin(), Pin(9));
-        assert!(button.pull_up);
+        assert_eq!(button.flags, [true]);
         assert_eq!(button.overlay_attr("pin").as_deref(), Some("9"));
         assert_eq!(button.overlay_attr("color"), None);
 
@@ -268,7 +269,7 @@ mod tests {
         assert_eq!(led_claim.owner.kind, OwnerKind::Recipe("led"));
         assert_eq!(led_claim.need, PinUse::Output);
         let button_claim = board.resources.claim_of(Pin(9)).unwrap();
-        assert_eq!(button_claim.owner.kind, OwnerKind::Button);
+        assert_eq!(button_claim.owner.kind, OwnerKind::Recipe("button"));
         assert_eq!(button_claim.need, PinUse::Input);
     }
 
@@ -302,10 +303,11 @@ mod tests {
     fn pull_up_defaults_to_false_and_must_be_a_flag() {
         let src = BUTTON.replace(" pull_up=\"true\"", "");
         let board = lower_src(&src).expect("pull_up defaults");
-        let Component::Button(button) = &board.components[1] else {
+        let Component::Recipe(button) = &board.components[1] else {
             panic!("the second component is the button");
         };
-        assert!(!button.pull_up);
+        assert_eq!(button.tag, "button");
+        assert_eq!(button.flags, [false]);
 
         let src = BUTTON.replace("pull_up=\"true\"", "pull_up=\"sideways\"");
         let errors = lower_src(&src).unwrap_err();
