@@ -8,13 +8,13 @@
 //! |---|---|
 //! | `{{ board }}` | the Wokwi board id for the project's chip |
 //! | `{{ serialMonitor }}` | `$serialMonitor` |
-//! | `{{ <component>.pin }}` | a component's GPIO number (no component can match yet) |
+//! | `{{ <component>.pin }}` | a component's GPIO number |
 //!
 //! A `{{ ... }}` that is not one of those is an [`OverlayError`], which the CLI
 //! reports as a user error rather than an internal one.
 
 use anyhow::Result;
-use espforge_elements::Board;
+use espforge_elements::{Board, Lowered};
 use std::fmt;
 
 use super::chip::Chip;
@@ -79,29 +79,31 @@ fn resolve_token(token: &str, file: &str, board: &Board, chip: &Chip) -> Result<
         "serialMonitor" => return Ok(wokwi::SERIAL_MONITOR.to_string()),
         _ => {}
     }
-    let Some(name) = token.strip_suffix(".pin") else {
+    // `{{ <id>.<attr> }}`: find the component by either spelling of its id,
+    // then ask it for the attribute. No per-element `match` here.
+    let Some((name, attr)) = token.rsplit_once('.') else {
         return Err(OverlayError::unknown(file, token).into());
     };
-    let name = name.trim();
-    // A component's `.pin` is resolved through its `Lowered` implementation.
-    // This slice has no component variants, so the lookup can never match and
-    // every `.pin` token is an unknown placeholder.
-    let Some(_component) = board
+    let (name, attr) = (name.trim(), attr.trim());
+    let Some(component) = board
         .components
         .iter()
         .find(|c| c.id().raw == name || c.id().rust_name() == name)
     else {
         return Err(OverlayError::unknown(file, token).into());
     };
-    // The component lookup lands in the next step, when `overlay_attr` is
-    // consulted for every supported attribute.
-    Err(OverlayError::unknown(file, token).into())
+    component
+        .overlay_attr(attr)
+        .ok_or_else(|| OverlayError::unknown(file, token).into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use espforge_elements::{Console, Meta, Runtime};
+    use espforge_elements::components::led::Led;
+    use espforge_elements::{
+        Component, Console, Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime,
+    };
 
     fn board() -> Board {
         Board {
@@ -154,8 +156,48 @@ mod tests {
         );
     }
 
+    /// `blink`: one LED whose id is written `red-led`.
+    fn blink_board() -> Board {
+        let mut board = board();
+        board.meta.name = "blink".into();
+        let id = Ident::new("red-led", 0..0);
+        let pin = board
+            .resources
+            .claim(
+                Pin(18),
+                Owner::new(OwnerKind::Led, id.clone()),
+                0..0,
+                PinUse::Output,
+            )
+            .expect("pin 18 is free");
+        board.components.push(Component::Led(Led {
+            id,
+            pin,
+            active_low: false,
+        }));
+        board
+    }
+
     #[test]
-    fn a_component_pin_cannot_match_until_components_exist() {
+    fn a_component_pin_resolves_under_both_id_spellings() {
+        let board = blink_board();
+        assert_eq!(render("{{ red-led.pin }}", "d.json", &board).unwrap(), "18");
+        assert_eq!(render("{{ red_led.pin }}", "d.json", &board).unwrap(), "18");
+    }
+
+    #[test]
+    fn an_unsupported_component_attribute_is_an_unknown_token() {
+        let err = render("{{ red_led.color }}", "diagram.json", &blink_board()).unwrap_err();
+        let overlay = err.downcast_ref::<OverlayError>().expect("typed error");
+        assert!(overlay.message.contains("unknown placeholder"), "{overlay}");
+        assert!(
+            overlay.message.contains("{{ <component>.pin }}"),
+            "{overlay}"
+        );
+    }
+
+    #[test]
+    fn a_component_that_is_not_on_the_board_is_an_unknown_token() {
         let err = render("{{ red_led.pin }}", "d.json", &board()).unwrap_err();
         let overlay = err.downcast_ref::<OverlayError>().expect("typed error");
         assert!(overlay.message.contains("unknown placeholder"), "{overlay}");
