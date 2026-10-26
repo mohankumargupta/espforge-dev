@@ -14,9 +14,7 @@ use crate::element::{
     Element, EmitCx, LowerCx, Lowered, Reported, conflict_diagnostic, is_rust_ident,
 };
 use crate::generated::button::Attrs;
-use crate::model::{
-    Board, ClaimedPin, Component, Direction, Ident, Owner, OwnerKind, Pin, PinUse,
-};
+use crate::model::{Board, ClaimedPin, Component, Direction, Ident, Owner, OwnerKind, Pin, PinUse};
 use crate::registry::ELEMENTS;
 
 /// The `<button>` element.
