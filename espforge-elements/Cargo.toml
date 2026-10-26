@@ -8,6 +8,12 @@ keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
 
+[build-dependencies]
+# The Attrs generator reads the same schema the crate interprets at runtime.
+# `espforge-schema` depends on nothing else in the workspace, so there is no
+# cycle.
+espforge-schema = { workspace = true }
+
 [dependencies]
 espf = { workspace = true }
 espforge-diagnostics = { workspace = true }
