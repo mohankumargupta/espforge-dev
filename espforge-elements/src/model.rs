@@ -7,8 +7,8 @@
 //!
 //! The graph is cut to what the elements need. Buses (`add_bus`, `bus`,
 //! `used_by`) return in phase 3, shared peripherals (`claim_peripheral`) with
-//! the elements that share them, and the [`OwnerKind`] set grows one variant
-//! per element (the bus kinds with their buses).
+//! the elements that share them, and the bus kinds join [`OwnerKind`] with
+//! their buses. Recipe components share the one [`OwnerKind::Recipe`] variant.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -127,7 +127,8 @@ impl PinUse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OwnerKind {
     Gpio,
-    Led,
+    /// A component built from a recipe; carries its schema tag.
+    Recipe(&'static str),
     Button,
     // The bus kinds arrive with their buses.
 }
@@ -137,7 +138,7 @@ impl OwnerKind {
     pub fn tag(self) -> &'static str {
         match self {
             OwnerKind::Gpio => "gpio",
-            OwnerKind::Led => "led",
+            OwnerKind::Recipe(tag) => tag,
             OwnerKind::Button => "button",
         }
     }
@@ -338,7 +339,7 @@ macro_rules! component_enum {
 }
 
 component_enum! {
-    Led(crate::components::led::Led),
+    Recipe(crate::components::recipe::RecipeComponent),
     Button(crate::components::button::Button),
 }
 
@@ -382,7 +383,7 @@ mod tests {
     ) -> Result<ClaimedPin, Conflict> {
         g.claim(
             Pin(pin),
-            owner(OwnerKind::Led, name, at + 1),
+            owner(OwnerKind::Recipe("led"), name, at + 1),
             at..at + 4 + name.len(),
             PinUse::Output,
         )
@@ -413,7 +414,7 @@ mod tests {
         let p = led_claim(&mut g, 18, "red-led", 40).unwrap();
 
         assert_eq!(p.pin(), Pin(18));
-        assert_eq!(p.owner().kind, OwnerKind::Led);
+        assert_eq!(p.owner().kind, OwnerKind::Recipe("led"));
         assert_eq!(p.owner().id.raw, "red-led");
         assert_eq!(p.owner().id.span, 41..48);
         assert_eq!(p.claim().span, 40..51);
@@ -451,7 +452,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(conflict.kind, ConflictKind::Direction);
-        assert_eq!(conflict.existing.owner.kind, OwnerKind::Led);
+        assert_eq!(conflict.existing.owner.kind, OwnerKind::Recipe("led"));
         assert_eq!(conflict.incoming.owner.kind, OwnerKind::Gpio);
     }
 
@@ -485,14 +486,14 @@ mod tests {
                 conflict.existing.owner.kind,
                 conflict.existing.owner.id.raw.as_str()
             ),
-            (OwnerKind::Led, "red_led")
+            (OwnerKind::Recipe("led"), "red_led")
         );
         assert_eq!(
             (
                 conflict.incoming.owner.kind,
                 conflict.incoming.owner.id.raw.as_str()
             ),
-            (OwnerKind::Led, "other")
+            (OwnerKind::Recipe("led"), "other")
         );
     }
 

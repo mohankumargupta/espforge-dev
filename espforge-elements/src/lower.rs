@@ -139,18 +139,19 @@ mod tests {
     fn blink_lowers_to_one_led_on_pin_18() {
         let board = lower_src(BLINK).expect("blink lowers");
         assert_eq!(board.components.len(), 1);
-        let Component::Led(led) = &board.components[0] else {
+        let Component::Recipe(led) = &board.components[0] else {
             panic!("blink lowers to a led");
         };
+        assert_eq!(led.tag, "led");
         assert_eq!(led.id.raw, "red_led");
         assert_eq!(led.id.rust_name(), "red_led");
         assert_eq!(led.pin.pin(), Pin(18));
-        assert!(!led.active_low);
+        assert_eq!(led.flags, [false]);
         assert_eq!(led.overlay_attr("pin").as_deref(), Some("18"));
         assert_eq!(led.overlay_attr("color"), None);
         assert_eq!(
             board.resources.claim_of(Pin(18)).unwrap().owner.kind,
-            crate::model::OwnerKind::Led
+            OwnerKind::Recipe("led")
         );
     }
 
@@ -247,9 +248,10 @@ mod tests {
         let board = lower_src(BUTTON).expect("button lowers");
         assert_eq!(board.components.len(), 2);
 
-        let Component::Led(led) = &board.components[0] else {
+        let Component::Recipe(led) = &board.components[0] else {
             panic!("the first component is the led");
         };
+        assert_eq!(led.tag, "led");
         assert_eq!(led.id.raw, "red_led");
         assert_eq!(led.pin.pin(), Pin(7));
 
@@ -263,7 +265,7 @@ mod tests {
         assert_eq!(button.overlay_attr("color"), None);
 
         let led_claim = board.resources.claim_of(Pin(7)).unwrap();
-        assert_eq!(led_claim.owner.kind, OwnerKind::Led);
+        assert_eq!(led_claim.owner.kind, OwnerKind::Recipe("led"));
         assert_eq!(led_claim.need, PinUse::Output);
         let button_claim = board.resources.claim_of(Pin(9)).unwrap();
         assert_eq!(button_claim.owner.kind, OwnerKind::Button);

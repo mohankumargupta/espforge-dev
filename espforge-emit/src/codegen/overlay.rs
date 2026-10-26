@@ -100,7 +100,7 @@ fn resolve_token(token: &str, file: &str, board: &Board, chip: &Chip) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use espforge_elements::components::led::Led;
+    use espforge_elements::components::recipe::RecipeComponent;
     use espforge_elements::{
         Component, Console, Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime,
     };
@@ -165,16 +165,19 @@ mod tests {
             .resources
             .claim(
                 Pin(18),
-                Owner::new(OwnerKind::Led, id.clone()),
+                Owner::new(OwnerKind::Recipe("led"), id.clone()),
                 0..0,
                 PinUse::Output,
             )
             .expect("pin 18 is free");
-        board.components.push(Component::Led(Led {
-            id,
-            pin,
-            active_low: false,
-        }));
+        board
+            .components
+            .push(Component::Recipe(RecipeComponent::new(
+                "led",
+                id,
+                pin,
+                vec![false],
+            )));
         board
     }
 

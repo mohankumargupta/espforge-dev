@@ -9,10 +9,15 @@
 //
 //   section "name" { summary ".."; description ".." }
 //   element "tag" section="name" {
-//       summary ".." [description ".."] attr "name" kind=".." [required=#true]
+//       summary ".." [description ".."
+//           recipe pin=".." direction="input|output" runtime=".." [invalid=".."]]
+//       attr "name" kind=".." [required=#true]
 //       [default=".."] [to="tag"] [of="kind"] { choices "a" "b"; help ".." }
 //       example "title" "fragment"  [see_also "section/tag"]
 //   }
+//
+// A component whose attributes are an `id`, one `ref` and booleans carries a
+// `recipe` and needs no Rust element file; the recipe tier reads it.
 //   options {
 //       option "name" [display_name=".."] [kind="bool|string|choice|list"]
 //           [default=#true|".."] [derived=#true] [requires_nightly=#true]
@@ -103,6 +108,7 @@ section "components" {
 
 element "led" section="components" {
     summary "An LED on a GPIO output"
+    recipe pin="gpio" direction="output" runtime="espforge_runtime::Led" invalid="E0601"
     attr "id" kind="ident" required=#true
     attr "gpio" kind="ref" to="gpio" required=#true
     attr "active_low" kind="bool" default="false" {

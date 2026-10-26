@@ -597,7 +597,8 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
 
     // Validated after the walk so the recipe can be checked against every
     // `attr` the element declares, wherever the `recipe` line sits.
-    let recipe = recipe_node.and_then(|node| parse_recipe(node, &tag, &section_name, &attrs, errors));
+    let recipe =
+        recipe_node.and_then(|node| parse_recipe(node, &tag, &section_name, &attrs, errors));
 
     if summary.is_none() {
         errors.push(err(
@@ -768,7 +769,9 @@ fn is_rust_path(text: &str) -> bool {
         && text.split("::").all(|segment| {
             !segment.is_empty()
                 && !segment.starts_with(|c: char| c.is_ascii_digit())
-                && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
 }
 
@@ -1572,7 +1575,10 @@ element "gpio" section="peripherals" {
     #[test]
     fn direction_must_be_input_or_output() {
         let src = RECIPE.replace("direction=\"output\"", "direction=\"sideways\"");
-        assert_eq!(only_message(&src), "`direction` must be `input` or `output`");
+        assert_eq!(
+            only_message(&src),
+            "`direction` must be `input` or `output`"
+        );
     }
 
     #[test]
