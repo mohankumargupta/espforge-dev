@@ -190,16 +190,22 @@ impl EmitCx {
 
 /// The legacy wording for a refused claim, kept with the graph so every
 /// element reports conflicts the same way.
-pub fn conflict_diagnostic(conflict: &Conflict) -> (&'static str, String) {
+///
+/// A direction clash is its own code and title (`E0703`, "pin direction
+/// clash"): the first one reachable is `<led>` against `<button>`, which the
+/// legacy diagnostics corpus pins.
+pub fn conflict_diagnostic(conflict: &Conflict) -> (DiagCode, &'static str, String) {
     let pin = conflict.pin.0;
     let existing = display(&conflict.existing.owner, true);
     let incoming = display(&conflict.incoming.owner, false);
     match conflict.kind {
         ConflictKind::Direction => (
-            "pin already used",
+            espforge_diagnostics::codes::CONFLICT_DIRECTION,
+            "pin direction clash",
             format!("{existing} and {incoming}: one pin cannot be both input and output"),
         ),
         ConflictKind::Pin | ConflictKind::SelfClash => (
+            espforge_diagnostics::codes::CONFLICT_PIN_USED,
             "pin already used",
             format!("{existing} and {incoming} both use GPIO{pin}"),
         ),

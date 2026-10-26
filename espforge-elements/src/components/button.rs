@@ -86,13 +86,8 @@ impl Element for ButtonElement {
                 PinUse::Input,
             )
             .map_err(|conflict| {
-                let (message, label) = conflict_diagnostic(&conflict);
-                cx.report(
-                    codes::CONFLICT_PIN_USED,
-                    conflict.incoming.span.clone(),
-                    message,
-                    label,
-                )
+                let (code, message, label) = conflict_diagnostic(&conflict);
+                cx.report(code, conflict.incoming.span.clone(), message, label)
             })?;
 
         cx.push(Component::Button(Button {

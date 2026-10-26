@@ -89,7 +89,7 @@ fn known_tags(section: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::element::Lowered;
-    use crate::model::{Component, Console, Direction, Pin, Runtime};
+    use crate::model::{Component, Console, Direction, OwnerKind, Pin, PinUse, Runtime};
     use espf::parser::parse_espf;
 
     const BLINK: &str = "# espforge\n\
@@ -100,6 +100,19 @@ mod tests {
         \x20 <gpio id=\"gpio18\" pin=\"18\" direction=\"output\" />\n\
         # components\n\
         \x20 <led id=\"red_led\" gpio=\"$gpio18\" />\n\
+        # devices\n\
+        # services\n";
+
+    const BUTTON: &str = "# espforge\n\
+        \x20 <project name=\"button\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"blocking\" />\n\
+        # peripherals\n\
+        \x20 <gpio id=\"gpio7\" pin=\"7\" direction=\"output\" />\n\
+        \x20 <gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />\n\
+        # components\n\
+        \x20 <led id=\"red_led\" gpio=\"$gpio7\" active_low=\"false\" />\n\
+        \x20 <button id=\"button\" gpio=\"$gpio9\" pull_up=\"true\" />\n\
         # devices\n\
         # services\n";
 
@@ -226,6 +239,150 @@ mod tests {
             errors[0]
                 .message
                 .contains("`<gpio>` is not a known element")
+        );
+    }
+
+    #[test]
+    fn button_lowers_beside_an_led_and_claims_its_input_pin() {
+        let board = lower_src(BUTTON).expect("button lowers");
+        assert_eq!(board.components.len(), 2);
+
+        let Component::Led(led) = &board.components[0] else {
+            panic!("the first component is the led");
+        };
+        assert_eq!(led.id.raw, "red_led");
+        assert_eq!(led.pin.pin(), Pin(7));
+
+        let Component::Button(button) = &board.components[1] else {
+            panic!("the second component is the button");
+        };
+        assert_eq!(button.id.raw, "button");
+        assert_eq!(button.pin.pin(), Pin(9));
+        assert!(button.pull_up);
+        assert_eq!(button.overlay_attr("pin").as_deref(), Some("9"));
+        assert_eq!(button.overlay_attr("color"), None);
+
+        let led_claim = board.resources.claim_of(Pin(7)).unwrap();
+        assert_eq!(led_claim.owner.kind, OwnerKind::Led);
+        assert_eq!(led_claim.need, PinUse::Output);
+        let button_claim = board.resources.claim_of(Pin(9)).unwrap();
+        assert_eq!(button_claim.owner.kind, OwnerKind::Button);
+        assert_eq!(button_claim.need, PinUse::Input);
+    }
+
+    #[test]
+    fn a_button_pin_may_leave_its_direction_undeclared() {
+        let src = BUTTON.replace(
+            "<gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />",
+            "<gpio id=\"gpio9\" pin=\"9\" />",
+        );
+        let board = lower_src(&src).expect("no direction is allowed");
+        assert_eq!(board.components.len(), 2);
+    }
+
+    #[test]
+    fn an_output_gpio_cannot_carry_a_button() {
+        let src = BUTTON.replace(
+            "<gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />",
+            "<gpio id=\"gpio9\" pin=\"9\" direction=\"output\" />",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, codes::COMPONENT_WRONG_DIRECTION);
+        assert_eq!(errors[0].message, "wrong gpio direction");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<button id=\"button\"> needs an input pin, but `gpio9` has direction=\"output\""
+        );
+    }
+
+    #[test]
+    fn pull_up_defaults_to_false_and_must_be_a_flag() {
+        let src = BUTTON.replace(" pull_up=\"true\"", "");
+        let board = lower_src(&src).expect("pull_up defaults");
+        let Component::Button(button) = &board.components[1] else {
+            panic!("the second component is the button");
+        };
+        assert!(!button.pull_up);
+
+        let src = BUTTON.replace("pull_up=\"true\"", "pull_up=\"sideways\"");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_BUTTON);
+        assert_eq!(errors[0].message, "invalid button");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<button id=\"button\"> pull_up=\"sideways\" must be \"true\" or \"false\""
+        );
+    }
+
+    #[test]
+    fn a_button_needs_a_gpio_that_exists_and_an_id_that_becomes_an_identifier() {
+        let errors = lower_src(&BUTTON.replace("$gpio9", "$gpio99")).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_UNKNOWN_GPIO);
+        assert_eq!(errors[0].message, "unknown gpio");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<button id=\"button\"> refers to `gpio99`, which is not a <gpio> in `# peripherals`"
+        );
+
+        let errors = lower_src(&BUTTON.replace("id=\"button\"", "id=\"9btn\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_BUTTON);
+        assert_eq!(errors[0].message, "invalid button");
+        assert!(errors[0].labels[0].text.contains("Rust identifier"));
+    }
+
+    #[test]
+    fn two_buttons_on_one_pin_are_e0702() {
+        let src = BUTTON.replace(
+            "  <button id=\"button\" gpio=\"$gpio9\" pull_up=\"true\" />\n",
+            "  <button id=\"button\" gpio=\"$gpio9\" pull_up=\"true\" />\n  <button id=\"other\" gpio=\"$gpio9\" />\n",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, codes::CONFLICT_PIN_USED);
+        assert_eq!(errors[0].message, "pin already used");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<button id=\"button\"> and <button id=\"other\"> both use GPIO9"
+        );
+    }
+
+    /// The legacy `conflict-led-vs-button` snapshot: a led (output) and a
+    /// button (input) on one pin are a direction clash, not a plain conflict.
+    #[test]
+    fn a_led_and_a_button_on_one_pin_are_a_direction_clash() {
+        let src = BUTTON
+            .replace(
+                "  <led id=\"red_led\" gpio=\"$gpio7\" active_low=\"false\" />\n  <button id=\"button\" gpio=\"$gpio9\" pull_up=\"true\" />\n",
+                "  <led id=\"red_led\" gpio=\"$gpio9\" active_low=\"false\" />\n  <button id=\"btn\" gpio=\"$gpio9\" pull_up=\"true\" />\n",
+            )
+            // The legacy snapshot leaves the direction undeclared, so the
+            // clash is the pin claim's, not a wrong-direction error.
+            .replace(
+                "<gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />",
+                "<gpio id=\"gpio9\" pin=\"9\" />",
+            );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, codes::CONFLICT_DIRECTION);
+        assert_eq!(errors[0].message, "pin direction clash");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<led id=\"red_led\"> and <button id=\"btn\">: one pin cannot be both input and output"
+        );
+    }
+
+    #[test]
+    fn button_is_not_a_peripheral() {
+        let src = BUTTON.replace(
+            "# peripherals\n",
+            "# peripherals\n  <button id=\"extra\" gpio=\"$gpio7\" />\n",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
+        assert_eq!(
+            errors[0].message,
+            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`"
         );
     }
 
