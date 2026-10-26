@@ -677,10 +677,7 @@ options {
         );
         let errs = run(&src).unwrap_err();
         assert_eq!(errs.len(), 3, "{errs:?}");
-        let texts: Vec<&str> = errs
-            .iter()
-            .map(|e| &src[e.primary.clone()])
-            .collect();
+        let texts: Vec<&str> = errs.iter().map(|e| &src[e.primary.clone()]).collect();
         assert!(
             texts.contains(&"maybe") && texts.contains(&"nope") && texts.contains(&"warp"),
             "{texts:?}"
@@ -748,10 +745,7 @@ options {
                 .any(|e| e.message.contains("`wifi` requires `embassy`")),
             "{errs:?}"
         );
-        let e = errs
-            .iter()
-            .find(|e| e.message.contains("embassy"))
-            .unwrap();
+        let e = errs.iter().find(|e| e.message.contains("embassy")).unwrap();
         assert_eq!(&src[e.primary.clone()], "<wifi");
     }
 

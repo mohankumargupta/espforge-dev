@@ -104,10 +104,7 @@ mod tests {
             let file = plan.get(&artifact.path).unwrap();
             assert_eq!(artifact.ownership, file.ownership, "{}", artifact.path);
         }
-        assert_eq!(
-            plan.get("Cargo.toml").unwrap().ownership,
-            Ownership::Owned
-        );
+        assert_eq!(plan.get("Cargo.toml").unwrap().ownership, Ownership::Owned);
         assert_eq!(
             plan.get(".cargo/config.toml").unwrap().ownership,
             Ownership::SeedOnce

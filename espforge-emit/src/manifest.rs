@@ -8,8 +8,8 @@
 //!
 //! `files` maps each `Owned` file to a checksum of what espforge wrote.
 
-use anyhow::{Context, Result};
 use crate::artifact::{Artifact, Ownership};
+use anyhow::{Context, Result};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;

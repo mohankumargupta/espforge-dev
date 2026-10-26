@@ -187,8 +187,13 @@ mod tests {
     #[test]
     fn several_labels_on_one_line_share_a_snippet() {
         let src = "a <led> and <button> collide\n";
-        let d = Diagnostic::error(codes::CORE_UNKNOWN_ELEMENT, 2..7, "pin clash", "led uses GPIO9")
-            .with_label(12..20, "button also uses GPIO9");
+        let d = Diagnostic::error(
+            codes::CORE_UNKNOWN_ELEMENT,
+            2..7,
+            "pin clash",
+            "led uses GPIO9",
+        )
+        .with_label(12..20, "button also uses GPIO9");
         let out = to_human("x.espf", src, &[d]);
 
         assert_eq!(out.matches("error:").count(), 1, "{out}");

@@ -186,7 +186,13 @@ mod tests {
     #[test]
     fn wokwi_off_drops_the_example_wokwi_files_too() {
         let (board, _) = components();
-        let off = case("esp32c3", Runtime::Blocking, true, &[("wokwi", "false")], &[]);
+        let off = case(
+            "esp32c3",
+            Runtime::Blocking,
+            true,
+            &[("wokwi", "false")],
+            &[],
+        );
         let overlay = overlay_files(&[("diagram.json", EXAMPLE_DIAGRAM.as_bytes())]);
         let rendered = generated(&board, &off.opts, &overlay);
         assert!(rendered.artifacts.iter().all(|a| a.path != "diagram.json"));

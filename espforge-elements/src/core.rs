@@ -55,12 +55,14 @@ pub fn core_from_section<'n, 'a>(
         }
     }
 
-    let short = |label: &str| Diagnostic::error(
-        codes::CORE_INCOMPLETE,
-        section_offset..section_offset,
-        "# espforge is incomplete",
-        label,
-    );
+    let short = |label: &str| {
+        Diagnostic::error(
+            codes::CORE_INCOMPLETE,
+            section_offset..section_offset,
+            "# espforge is incomplete",
+            label,
+        )
+    };
 
     let name = project.and_then(|p| p.get_attr("name"));
     if name.is_none() {
@@ -246,15 +248,9 @@ mod tests {
         let src = HEAD.to_string();
         let (sections, _, offsets) = parse_espf_runtime_with_diagnostics(&src);
         let errs = core_from_section(offsets["espforge"], &sections["espforge"]).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|e| e.labels[0].text.contains("<chip"))
-        );
+        assert!(errs.iter().any(|e| e.labels[0].text.contains("<chip")));
         assert!(errs.iter().all(|e| e.code == codes::CORE_INCOMPLETE));
-        assert!(
-            errs.iter()
-                .all(|e| src[e.primary.start..].starts_with('#'))
-        );
+        assert!(errs.iter().all(|e| src[e.primary.start..].starts_with('#')));
     }
 
     #[test]

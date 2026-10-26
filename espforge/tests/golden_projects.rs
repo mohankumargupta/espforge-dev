@@ -76,7 +76,9 @@ fn declared_cells() -> Vec<Cell> {
                 .iter()
                 .map(|v| {
                     v.as_str()
-                        .unwrap_or_else(|| panic!("{}/example.toml chips must be strings", example.name))
+                        .unwrap_or_else(|| {
+                            panic!("{}/example.toml chips must be strings", example.name)
+                        })
                         .to_string()
                 })
                 .collect::<Vec<_>>();
@@ -101,10 +103,7 @@ fn declared_cells() -> Vec<Cell> {
                         example: example.name.clone(),
                         chip: chip.clone(),
                         runtime: runtime_from(runtime),
-                        slug: format!(
-                            "{}.{}.{}.{}",
-                            category.name, example.name, chip, runtime
-                        ),
+                        slug: format!("{}.{}.{}.{}", category.name, example.name, chip, runtime),
                     });
                 }
             }

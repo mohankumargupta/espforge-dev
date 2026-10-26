@@ -639,11 +639,7 @@ mod tests {
         assert_eq!(&src[e.primary.clone()], "# peripherals");
         // The *second* header is the one underlined.
         assert_eq!(e.primary.start, src.rfind("# peripherals").unwrap());
-        assert!(
-            e.labels[0].text.contains("line 2"),
-            "{}",
-            e.labels[0].text
-        );
+        assert!(e.labels[0].text.contains("line 2"), "{}", e.labels[0].text);
         // First definition wins.
         assert_eq!(p.sections["peripherals"][0].id, "a");
     }

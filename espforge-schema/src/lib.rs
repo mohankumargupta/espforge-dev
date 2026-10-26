@@ -137,7 +137,9 @@ pub enum AttrKind {
     Bool,
     Choice(Vec<String>),
     /// A `$id` reference to elements of these tags.
-    Ref { to: Vec<String> },
+    Ref {
+        to: Vec<String>,
+    },
     /// A GPIO number or a reference to a `<gpio>`.
     PinOrRef,
     /// Repeated with `+=` on every entry, the first one included.
@@ -373,7 +375,11 @@ fn parse_section(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
     let span = node_range(node);
     let mut names = positional_strings(node, errors);
     if names.is_empty() {
-        errors.push(err(span, "section has no name", "write `section \"name\" ...`"));
+        errors.push(err(
+            span,
+            "section has no name",
+            "write `section \"name\" ...`",
+        ));
         return;
     }
     let (name, name_span) = names.remove(0);
@@ -450,7 +456,11 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
     let span = node_range(node);
     let mut names = positional_strings(node, errors);
     if names.is_empty() {
-        errors.push(err(span, "element has no tag", "write `element \"tag\" ...`"));
+        errors.push(err(
+            span,
+            "element has no tag",
+            "write `element \"tag\" ...`",
+        ));
         return;
     }
     let (tag, tag_span) = names.remove(0);
@@ -646,11 +656,7 @@ fn parse_attr(node: &KdlNode, attrs: &mut Vec<AttrDef>, errors: &mut Vec<SchemaE
             }
             "help" => match positional_strings(child, errors).into_iter().next() {
                 Some((h, _)) => help = Some(h),
-                None => errors.push(err(
-                    node_range(child),
-                    "`help` takes a string",
-                    "quote it",
-                )),
+                None => errors.push(err(node_range(child), "`help` takes a string", "quote it")),
             },
             other => errors.push(err(
                 node_range(child),
@@ -719,7 +725,15 @@ fn build_kind(
         }
         "list" => match of {
             Some((of_name, of_span)) => {
-                let inner = build_kind(name, &of_name, of_span, Vec::new(), Vec::new(), None, errors);
+                let inner = build_kind(
+                    name,
+                    &of_name,
+                    of_span,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    errors,
+                );
                 Some(AttrKind::List(Box::new(inner)))
             }
             None => {
@@ -769,7 +783,11 @@ fn parse_option(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErro
     let span = node_range(node);
     let mut names = positional_strings(node, errors);
     if names.is_empty() {
-        errors.push(err(span, "option has no name", "write `option \"name\" ...`"));
+        errors.push(err(
+            span,
+            "option has no name",
+            "write `option \"name\" ...`",
+        ));
         return;
     }
     let (name, name_span) = names.remove(0);
@@ -973,11 +991,9 @@ fn check_references(schema: &Schema, errors: &mut Vec<SchemaError>) {
             }
         }
         for target in &element.see_also {
-            let known = target
-                .split_once('/')
-                .is_some_and(|(section, tag)| {
-                    schema.section_named(section).is_some() && schema.element(tag).is_some()
-                });
+            let known = target.split_once('/').is_some_and(|(section, tag)| {
+                schema.section_named(section).is_some() && schema.element(tag).is_some()
+            });
             if !known {
                 errors.push(err(
                     element.span.clone(),
@@ -1146,7 +1162,9 @@ element "led" section="peripherals" {
         let errors = load(src).unwrap_err();
         let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
         assert!(
-            messages.iter().any(|m| m.contains("unknown element `gpio`")),
+            messages
+                .iter()
+                .any(|m| m.contains("unknown element `gpio`")),
             "{messages:?}"
         );
         assert!(
@@ -1194,9 +1212,6 @@ element "led" section="components" {
 }
 "##;
         let errors = load(src).unwrap_err();
-        assert!(
-            errors[0].message.contains("names no element"),
-            "{errors:?}"
-        );
+        assert!(errors[0].message.contains("names no element"), "{errors:?}");
     }
 }

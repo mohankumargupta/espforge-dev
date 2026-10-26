@@ -81,5 +81,4 @@ mod tests {
                 .contains("target/xtensa-esp32s3-none-elf/debug/hello_world")
         );
     }
-
 }

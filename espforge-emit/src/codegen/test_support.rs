@@ -4,9 +4,7 @@
 //! runtime, and setting them by hand is a resolver error. So the fixture takes
 //! the runtime and the service list, not an option flag for them.
 
-use espforge_elements::{
-    Answers, Console, DerivedInputs, Meta, ResolvedOptions, Runtime, resolve,
-};
+use espforge_elements::{Answers, Console, DerivedInputs, Meta, ResolvedOptions, Runtime, resolve};
 use espforge_schema::schema;
 
 use super::chip::Chip;

@@ -41,9 +41,8 @@ pub fn resolve_source(file: Option<&Path>, example: Option<&str>) -> Result<Sour
         (Some(f), None) => from_file(f),
         (None, None) => Err("give a FILE or --example <category/name>".to_string()),
         (None, Some(path)) => {
-            let ex = espforge_examples::find(path).ok_or_else(|| {
-                format!("no example '{path}'; it must be <category>/<name>")
-            })?;
+            let ex = espforge_examples::find(path)
+                .ok_or_else(|| format!("no example '{path}'; it must be <category>/<name>"))?;
             Ok(Source {
                 name: format!("embedded:{path}"),
                 text: ex.content.clone(),
