@@ -857,6 +857,7 @@ dependencies = [
 name = "espforge-schema"
 version = "0.6.0"
 dependencies = [
+ "espf",
  "kdl",
 ]
 

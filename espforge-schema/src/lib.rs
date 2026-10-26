@@ -1,1 +1,1202 @@
+//! The schema: one file, one loader.
+//!
+//! `espf.schema.kdl` is the single source of truth for what an ESPF file may
+//! contain (sections, elements, attributes, examples) and for the build
+//! options it can turn on. This crate owns the only code in the workspace that
+//! walks KDL; everything else reads the typed model it produces.
+//!
+//! ```kdl
+//! section "peripherals" {
+//!     summary "The chip's hardware blocks you use"
+//!     description "Each one gets an id components refer to with $id."
+//! }
+//! element "i2c" section="peripherals" {
+//!     summary "I2C bus controller"
+//!     attr "sda" kind="pin" required=#true
+//!     example "minimal" #"<i2c id="i2c0" sda="6" scl="7" />"#
+//!     see_also "components/i2c_component"
+//! }
+//! options {
+//!     option "alloc" default=#true {
+//!         help "esp-alloc comes with no stability guarantees at this time."
+//!     }
+//! }
+//! ```
+//!
+//! [`load`] reports every problem with the byte span of the offending node or
+//! argument; [`schema`] is the embedded copy, parsed once.
 
+use kdl::{KdlDocument, KdlEntry, KdlNode};
+use std::ops::Range;
+use std::sync::LazyLock;
+
+/// The schema text, embedded at compile time.
+pub const SCHEMA_KDL: &str = include_str!("espf.schema.kdl");
+
+/// The one schema instance, parsed on first use.
+///
+/// A schema that fails to load is a bug in this crate, not in a user's file:
+/// the workspace's own tests parse it before it can ever be shipped.
+pub fn schema() -> &'static Schema {
+    static SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
+        load(SCHEMA_KDL).unwrap_or_else(|errors| {
+            let mut text = String::from("espf.schema.kdl does not load:");
+            for error in errors {
+                text.push_str(&format!("\n  {}: {}", error.span.start, error.message));
+            }
+            panic!("{text}")
+        })
+    });
+    &SCHEMA
+}
+
+// ---------------------------------------------------------------- data model
+
+/// Names no section or element may have.
+pub const RESERVED_NAMES: &[&str] = &["help", "examples", "overview"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Schema {
+    pub sections: Vec<Section>,
+    pub elements: Vec<Element>,
+    pub options: Vec<OptionDef>,
+}
+
+impl Schema {
+    pub fn section_named(&self, name: &str) -> Option<&Section> {
+        self.sections.iter().find(|s| s.name == name)
+    }
+
+    pub fn element(&self, tag: &str) -> Option<&Element> {
+        self.elements.iter().find(|e| e.tag == tag)
+    }
+
+    /// Every element that lives in `section`, in schema order.
+    pub fn elements_in<'a>(&'a self, section: &'a str) -> impl Iterator<Item = &'a Element> {
+        self.elements.iter().filter(move |e| e.section == section)
+    }
+
+    pub fn get(&self, name: &str) -> Option<&OptionDef> {
+        self.options.iter().find(|o| o.name == name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub name: String,
+    /// One line, shown in listings.
+    pub summary: String,
+    /// Paragraph shown above the section's elements.
+    pub description: String,
+    /// Span of the `section` node in `espf.schema.kdl`.
+    pub span: Range<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Element {
+    pub tag: String,
+    pub section: String,
+    pub summary: String,
+    pub description: Option<String>,
+    pub attrs: Vec<AttrDef>,
+    pub examples: Vec<Example>,
+    /// Targets of `see_also`, as `section/tag`.
+    pub see_also: Vec<String>,
+    /// Span of the `element` node in `espf.schema.kdl`.
+    pub span: Range<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Example {
+    /// Shown as the title of the example.
+    pub title: String,
+    /// One or more lines of valid ESPF (may include `# section` headers).
+    pub fragment: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttrDef {
+    /// Dotted names allowed: `network1.ssid`.
+    pub name: String,
+    pub kind: AttrKind,
+    pub required: bool,
+    pub default: Option<String>,
+    pub help: Option<String>,
+    /// Span of the `attr` node in `espf.schema.kdl`.
+    pub span: Range<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttrKind {
+    Ident,
+    Str,
+    Pin,
+    Freq,
+    Hex,
+    U32,
+    Bool,
+    Choice(Vec<String>),
+    /// A `$id` reference to elements of these tags.
+    Ref { to: Vec<String> },
+    /// A GPIO number or a reference to a `<gpio>`.
+    PinOrRef,
+    /// Repeated with `+=` on every entry, the first one included.
+    List(Box<AttrKind>),
+}
+
+impl AttrKind {
+    /// The short form shown in listings (`pin`, `ref to i2c`, `none | even`).
+    pub fn display(&self) -> String {
+        match self {
+            AttrKind::Ident => "ident".into(),
+            AttrKind::Str => "string".into(),
+            AttrKind::Pin => "pin".into(),
+            AttrKind::Freq => "freq".into(),
+            AttrKind::Hex => "hex".into(),
+            AttrKind::U32 => "u32".into(),
+            AttrKind::Bool => "bool".into(),
+            AttrKind::Choice(c) => c.join(" | "),
+            AttrKind::Ref { to } => format!("ref to {}", to.join(", ")),
+            AttrKind::PinOrRef => "pin or ref".into(),
+            AttrKind::List(inner) => format!("list of {}", inner.display()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptValue {
+    Bool(bool),
+    Str(String),
+    List(Vec<String>),
+}
+
+impl OptValue {
+    /// "Switched on": `true`, a non-empty string, or a non-empty list.
+    pub fn is_on(&self) -> bool {
+        match self {
+            OptValue::Bool(b) => *b,
+            OptValue::Str(s) => !s.is_empty(),
+            OptValue::List(l) => !l.is_empty(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Bool,
+    String,
+    Choice(Vec<String>),
+    List,
+}
+
+/// Which chips an option is available for. `None` = all chips.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Compat {
+    pub chips: Option<Vec<String>>,
+}
+
+impl Compat {
+    pub fn allows(&self, chip: &str) -> bool {
+        self.chips
+            .as_ref()
+            .is_none_or(|c| c.iter().any(|x| x == chip))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Requires {
+    /// Other options that must be on when this one is.
+    pub options: Vec<String>,
+    /// External tools (e.g. `probe-rs`) needed; informational for `doctor`.
+    pub tools: Vec<String>,
+    pub nightly: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionDef {
+    pub name: String,
+    pub display_name: Option<String>,
+    pub help: Option<String>,
+    pub kind: Kind,
+    /// Value used when `defaults="true"` and nothing was given.
+    pub default: Option<OptValue>,
+    pub requires: Requires,
+    pub compat: Compat,
+    pub selection_group: Option<String>,
+    /// Computed by the pipeline rather than chosen by the user (`embassy`).
+    pub derived: bool,
+    /// Span of the `option` node in `espf.schema.kdl`.
+    pub span: Range<usize>,
+}
+
+/// One problem with the schema text, located in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaError {
+    /// Short summary.
+    pub message: String,
+    /// Explanation shown at the span.
+    pub label: String,
+    /// Byte span of the offending node or argument.
+    pub span: Range<usize>,
+}
+
+// -------------------------------------------------------------------- loader
+
+fn node_range(n: &KdlNode) -> Range<usize> {
+    let s = n.span();
+    s.offset()..s.offset() + s.len()
+}
+
+fn entry_range(e: &KdlEntry) -> Range<usize> {
+    let s = e.span();
+    s.offset()..s.offset() + s.len()
+}
+
+fn err(span: Range<usize>, message: impl Into<String>, label: impl Into<String>) -> SchemaError {
+    SchemaError {
+        message: message.into(),
+        label: label.into(),
+        span,
+    }
+}
+
+/// Positional (unnamed) string arguments of a node, with their spans.
+fn positional_strings(
+    node: &KdlNode,
+    errors: &mut Vec<SchemaError>,
+) -> Vec<(String, Range<usize>)> {
+    let mut out = Vec::new();
+    for e in node.entries().iter().filter(|e| e.name().is_none()) {
+        match e.value().as_string() {
+            Some(s) => out.push((s.to_string(), entry_range(e))),
+            None => errors.push(err(
+                entry_range(e),
+                format!("`{}` takes strings", node.name().value()),
+                "write this argument as a quoted string",
+            )),
+        }
+    }
+    out
+}
+
+/// Values of a named property like `section=` or `kind=`, with spans.
+fn props(node: &KdlNode, key: &str, errors: &mut Vec<SchemaError>) -> Vec<(String, Range<usize>)> {
+    node.entries()
+        .iter()
+        .filter(|e| e.name().is_some_and(|n| n.value() == key))
+        .map(|e| match e.value().as_string() {
+            Some(s) => (s.to_string(), entry_range(e)),
+            None => {
+                errors.push(err(
+                    entry_range(e),
+                    format!("`{key}` must be a string"),
+                    "quote it",
+                ));
+                (String::new(), entry_range(e))
+            }
+        })
+        .collect()
+}
+
+/// The first value of a named property.
+fn prop(
+    node: &KdlNode,
+    key: &str,
+    errors: &mut Vec<SchemaError>,
+) -> Option<(String, Range<usize>)> {
+    props(node, key, errors).into_iter().next()
+}
+
+fn children(node: &KdlNode) -> &[KdlNode] {
+    node.children().map(|c| c.nodes()).unwrap_or(&[])
+}
+
+/// Parse `espf.schema.kdl` text. All problems are reported, each with the byte
+/// span of the offending KDL node or argument. Checks include reserved names,
+/// tag uniqueness across sections, every `to=` and `see_also` target, and that
+/// every element has a summary and at least one example.
+pub fn load(src: &str) -> Result<Schema, Vec<SchemaError>> {
+    let doc = match KdlDocument::parse_v2(src) {
+        Ok(d) => d,
+        Err(e) => {
+            let errors: Vec<SchemaError> = e
+                .diagnostics
+                .iter()
+                .map(|d| {
+                    let s = d.span;
+                    err(
+                        s.offset()..s.offset() + s.len(),
+                        "invalid KDL",
+                        d.message.as_deref().unwrap_or("syntax error"),
+                    )
+                })
+                .collect();
+            return Err(if errors.is_empty() {
+                vec![err(0..0, "invalid KDL", "the file is not valid KDL v2")]
+            } else {
+                errors
+            });
+        }
+    };
+
+    let mut schema = Schema {
+        sections: Vec::new(),
+        elements: Vec::new(),
+        options: Vec::new(),
+    };
+    let mut errors = Vec::new();
+
+    for node in doc.nodes() {
+        match node.name().value() {
+            "section" => parse_section(node, &mut schema, &mut errors),
+            "element" => parse_element(node, &mut schema, &mut errors),
+            "required" | "options" => parse_options(node, &mut schema, &mut errors),
+            other => errors.push(err(
+                node_range(node),
+                format!("unknown top-level node `{other}`"),
+                "expected `section`, `element` or `options`",
+            )),
+        }
+    }
+
+    check_references(&schema, &mut errors);
+
+    if errors.is_empty() {
+        Ok(schema)
+    } else {
+        errors.sort_by_key(|e| e.span.start);
+        Err(errors)
+    }
+}
+
+fn parse_section(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaError>) {
+    let span = node_range(node);
+    let mut names = positional_strings(node, errors);
+    if names.is_empty() {
+        errors.push(err(span, "section has no name", "write `section \"name\" ...`"));
+        return;
+    }
+    let (name, name_span) = names.remove(0);
+    if RESERVED_NAMES.contains(&name.as_str()) {
+        errors.push(err(
+            name_span,
+            format!("`{name}` is a reserved name"),
+            "a section cannot be called help, examples or overview",
+        ));
+        return;
+    }
+    if schema.section_named(&name).is_some() {
+        errors.push(err(
+            name_span,
+            format!("duplicate section `{name}`"),
+            "each section may be defined once",
+        ));
+        return;
+    }
+
+    let mut summary = None;
+    let mut description = None;
+    for child in children(node) {
+        match child.name().value() {
+            "summary" | "description" => {
+                let slot = if child.name().value() == "summary" {
+                    &mut summary
+                } else {
+                    &mut description
+                };
+                let value = positional_strings(child, errors).into_iter().next();
+                if slot.is_some() {
+                    errors.push(err(
+                        node_range(child),
+                        format!("`{}` given twice", child.name().value()),
+                        "keep one",
+                    ));
+                } else if let Some((value, _)) = value {
+                    *slot = Some(value);
+                } else {
+                    errors.push(err(
+                        node_range(child),
+                        format!("`{}` takes a string", child.name().value()),
+                        "quote it",
+                    ));
+                }
+            }
+            other => errors.push(err(
+                node_range(child),
+                format!("unknown node `{other}` in section `{name}`"),
+                "expected `summary` or `description`",
+            )),
+        }
+    }
+    for (taken, what) in [(&summary, "summary"), (&description, "description")] {
+        if taken.is_none() {
+            errors.push(err(
+                span.clone(),
+                format!("section `{name}` has no {what}"),
+                "write it as a quoted string inside the section",
+            ));
+        }
+    }
+
+    schema.sections.push(Section {
+        name,
+        summary: summary.unwrap_or_default(),
+        description: description.unwrap_or_default(),
+        span,
+    });
+}
+
+fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaError>) {
+    let span = node_range(node);
+    let mut names = positional_strings(node, errors);
+    if names.is_empty() {
+        errors.push(err(span, "element has no tag", "write `element \"tag\" ...`"));
+        return;
+    }
+    let (tag, tag_span) = names.remove(0);
+    if RESERVED_NAMES.contains(&tag.as_str()) {
+        errors.push(err(
+            tag_span,
+            format!("`{tag}` is a reserved name"),
+            "an element cannot be called help, examples or overview",
+        ));
+        return;
+    }
+    if schema.element(&tag).is_some() {
+        errors.push(err(
+            tag_span,
+            format!("duplicate tag `{tag}`"),
+            "tags are unique across sections",
+        ));
+        return;
+    }
+    let Some((section_name, section_span)) = prop(node, "section", errors) else {
+        errors.push(err(
+            span,
+            format!("element `{tag}` has no section"),
+            "add `section=\"name\"` naming a section",
+        ));
+        return;
+    };
+    if schema.section_named(&section_name).is_none() {
+        errors.push(err(
+            section_span,
+            format!("element `{tag}` names unknown section `{section_name}`"),
+            "define that `section` node first, or fix the name",
+        ));
+        return;
+    }
+
+    let mut summary = None;
+    let mut description = None;
+    let mut attrs = Vec::new();
+    let mut examples = Vec::new();
+    let mut see_also = Vec::new();
+    for child in children(node) {
+        match child.name().value() {
+            "summary" | "description" => {
+                let slot = if child.name().value() == "summary" {
+                    &mut summary
+                } else {
+                    &mut description
+                };
+                let value = positional_strings(child, errors).into_iter().next();
+                if slot.is_some() {
+                    errors.push(err(
+                        node_range(child),
+                        format!("`{}` given twice", child.name().value()),
+                        "keep one",
+                    ));
+                } else if let Some((value, _)) = value {
+                    *slot = Some(value);
+                } else {
+                    errors.push(err(
+                        node_range(child),
+                        format!("`{}` takes a string", child.name().value()),
+                        "quote it",
+                    ));
+                }
+            }
+            "attr" => parse_attr(child, &mut attrs, errors),
+            "example" => parse_example(child, &mut examples, errors),
+            "see_also" => {
+                for (target, target_span) in positional_strings(child, errors) {
+                    if target.split_once('/').is_none() {
+                        errors.push(err(
+                            target_span,
+                            format!("`{target}` is not a `section/leaf` target"),
+                            "write for example `components/i2c_component`",
+                        ));
+                        continue;
+                    }
+                    see_also.push(target);
+                }
+            }
+            other => errors.push(err(
+                node_range(child),
+                format!("unknown node `{other}` in element `{tag}`"),
+                "expected summary, description, attr, example or see_also",
+            )),
+        }
+    }
+
+    if summary.is_none() {
+        errors.push(err(
+            span.clone(),
+            format!("element `{tag}` has no summary"),
+            "write `summary \"...\"`",
+        ));
+    }
+    if examples.is_empty() {
+        errors.push(err(
+            span.clone(),
+            format!("element `{tag}` has no example"),
+            "every element carries at least one `example \"title\" \"fragment\"`",
+        ));
+    }
+
+    schema.elements.push(Element {
+        tag,
+        section: section_name,
+        summary: summary.unwrap_or_default(),
+        description,
+        attrs,
+        examples,
+        see_also,
+        span,
+    });
+}
+
+fn parse_example(node: &KdlNode, examples: &mut Vec<Example>, errors: &mut Vec<SchemaError>) {
+    let strings = positional_strings(node, errors);
+    if strings.len() != 2 {
+        if strings.len() == 1 {
+            errors.push(err(
+                node_range(node),
+                "`example` takes title and fragment",
+                "write `example \"title\" #\"<tag ... />\"#`",
+            ));
+        }
+        return;
+    }
+    let (title, title_span) = &strings[0];
+    if examples.iter().any(|ex| &ex.title == title) {
+        errors.push(err(
+            title_span.clone(),
+            format!("duplicate example title `{title}`"),
+            "give each example a different title",
+        ));
+        return;
+    }
+    examples.push(Example {
+        title: title.clone(),
+        fragment: strings[1].0.clone(),
+    });
+}
+
+fn parse_attr(node: &KdlNode, attrs: &mut Vec<AttrDef>, errors: &mut Vec<SchemaError>) {
+    let span = node_range(node);
+    let mut names = positional_strings(node, errors);
+    if names.is_empty() {
+        errors.push(err(span, "attr has no name", "write `attr \"name\" ...`"));
+        return;
+    }
+    let (name, name_span) = names.remove(0);
+    if attrs.iter().any(|a| a.name == name) {
+        errors.push(err(
+            name_span,
+            format!("duplicate attribute `{name}`"),
+            "each attribute may be declared once per element",
+        ));
+        return;
+    }
+    let Some((kind_name, kind_span)) = prop(node, "kind", errors) else {
+        errors.push(err(span, "attr has no kind", "add `kind=\"..\"`"));
+        return;
+    };
+
+    let mut required = false;
+    for e in node
+        .entries()
+        .iter()
+        .filter(|e| e.name().is_some_and(|n| n.value() == "required"))
+    {
+        match e.value().as_bool() {
+            Some(b) => required = b,
+            None => errors.push(err(
+                entry_range(e),
+                "`required` must be #true or #false",
+                "KDL v2 booleans are #true / #false",
+            )),
+        }
+    }
+
+    let default = props(node, "default", errors)
+        .into_iter()
+        .next()
+        .map(|(d, _)| d);
+    let mut choices = Vec::new();
+    let mut help = None;
+    for child in children(node) {
+        match child.name().value() {
+            "choices" => {
+                for (choice, _) in positional_strings(child, errors) {
+                    choices.push(choice);
+                }
+            }
+            "help" => match positional_strings(child, errors).into_iter().next() {
+                Some((h, _)) => help = Some(h),
+                None => errors.push(err(
+                    node_range(child),
+                    "`help` takes a string",
+                    "quote it",
+                )),
+            },
+            other => errors.push(err(
+                node_range(child),
+                format!("unknown node `{other}` in attribute `{name}`"),
+                "expected `choices` or `help`",
+            )),
+        }
+    }
+
+    let to: Vec<String> = props(node, "to", errors)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    let of = props(node, "of", errors).into_iter().next();
+    let kind = build_kind(&name, &kind_name, kind_span, choices, to, of, errors);
+
+    attrs.push(AttrDef {
+        name,
+        kind,
+        required,
+        default,
+        help,
+        span,
+    });
+}
+
+/// Turn the declared pieces into an `AttrKind`, erroring on shapes that do
+/// not fit (choice without choices, ref without `to=`, list without `of=`).
+fn build_kind(
+    name: &str,
+    kind_name: &str,
+    kind_span: Range<usize>,
+    choices: Vec<String>,
+    to: Vec<String>,
+    of: Option<(String, Range<usize>)>,
+    errors: &mut Vec<SchemaError>,
+) -> AttrKind {
+    let kind: Option<AttrKind> = match kind_name {
+        "ident" => Some(AttrKind::Ident),
+        "str" => Some(AttrKind::Str),
+        "pin" => Some(AttrKind::Pin),
+        "freq" => Some(AttrKind::Freq),
+        "hex" => Some(AttrKind::Hex),
+        "u32" => Some(AttrKind::U32),
+        "bool" => Some(AttrKind::Bool),
+        "pin_or_ref" => Some(AttrKind::PinOrRef),
+        "choice" => {
+            if choices.is_empty() {
+                errors.push(err(
+                    kind_span.clone(),
+                    format!("choice attribute `{name}` has no choices"),
+                    "add `choices \"a\" \"b\"`",
+                ));
+            }
+            Some(AttrKind::Choice(choices))
+        }
+        "ref" => {
+            if to.is_empty() {
+                errors.push(err(
+                    kind_span.clone(),
+                    format!("ref attribute `{name}` has no `to=`"),
+                    "write `kind=\"ref\" to=\"gpio\"`",
+                ));
+            }
+            Some(AttrKind::Ref { to })
+        }
+        "list" => match of {
+            Some((of_name, of_span)) => {
+                let inner = build_kind(name, &of_name, of_span, Vec::new(), Vec::new(), None, errors);
+                Some(AttrKind::List(Box::new(inner)))
+            }
+            None => {
+                errors.push(err(
+                    kind_span.clone(),
+                    format!("list attribute `{name}` has no `of=`"),
+                    "write `kind=\"list\" of=\"str\"`",
+                ));
+                None
+            }
+        },
+        other => {
+            errors.push(err(
+                kind_span.clone(),
+                format!("unknown kind \"{other}\""),
+                "expected ident, str, pin, freq, hex, u32, bool, choice, ref, pin_or_ref or list",
+            ));
+            None
+        }
+    };
+    kind.unwrap_or(AttrKind::Str)
+}
+
+fn parse_options(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaError>) {
+    match node.name().value() {
+        // Kept as an accepted top-level node so the option half and the
+        // element half share one file; this slice has no `required` answers.
+        "required" => {}
+        "options" => {
+            for child in children(node) {
+                if child.name().value() != "option" {
+                    errors.push(err(
+                        node_range(child),
+                        format!("unknown node `{}` in `options`", child.name().value()),
+                        "expected `option`",
+                    ));
+                    continue;
+                }
+                parse_option(child, schema, errors);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_option(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaError>) {
+    let span = node_range(node);
+    let mut names = positional_strings(node, errors);
+    if names.is_empty() {
+        errors.push(err(span, "option has no name", "write `option \"name\" ...`"));
+        return;
+    }
+    let (name, name_span) = names.remove(0);
+    if schema.get(&name).is_some() {
+        errors.push(err(
+            name_span,
+            format!("duplicate option `{name}`"),
+            "each option may be defined once",
+        ));
+        return;
+    }
+
+    let mut def = OptionDef {
+        name: name.clone(),
+        display_name: None,
+        help: None,
+        kind: Kind::Bool,
+        default: None,
+        requires: Requires::default(),
+        compat: Compat::default(),
+        selection_group: None,
+        derived: false,
+        span,
+    };
+    let mut kind_name = "bool".to_string();
+    let mut kind_span = def.span.clone();
+    let mut default_entry: Option<&KdlEntry> = None;
+
+    for e in node.entries().iter().filter(|e| e.name().is_some()) {
+        let key = e.name().map(|k| k.value()).unwrap_or("");
+        let v = e.value();
+        match key {
+            "display_name" | "selection_group" | "kind" => match v.as_string() {
+                Some(s) => match key {
+                    "display_name" => def.display_name = Some(s.to_string()),
+                    "selection_group" => def.selection_group = Some(s.to_string()),
+                    _ => {
+                        kind_name = s.to_string();
+                        kind_span = entry_range(e);
+                    }
+                },
+                None => errors.push(err(
+                    entry_range(e),
+                    format!("`{key}` must be a string"),
+                    "quote it",
+                )),
+            },
+            "requires_nightly" | "derived" => match v.as_bool() {
+                Some(b) if key == "derived" => def.derived = b,
+                Some(b) => def.requires.nightly = b,
+                None => errors.push(err(
+                    entry_range(e),
+                    format!("`{key}` must be #true or #false"),
+                    "KDL v2 booleans are #true / #false",
+                )),
+            },
+            "default" => default_entry = Some(e),
+            other => errors.push(err(
+                entry_range(e),
+                format!("unknown property `{other}` on option `{name}`"),
+                "expected display_name, selection_group, requires_nightly, derived, kind or default",
+            )),
+        }
+    }
+
+    let mut choices: Vec<String> = Vec::new();
+    for child in children(node) {
+        match child.name().value() {
+            "help" => {
+                if let Some((h, _)) = positional_strings(child, errors).into_iter().next() {
+                    def.help = Some(h);
+                }
+            }
+            "requires" => {
+                for (target, _) in positional_strings(child, errors) {
+                    def.requires.options.push(target);
+                }
+            }
+            "requires_tools" => {
+                for (tool, _) in positional_strings(child, errors) {
+                    def.requires.tools.push(tool);
+                }
+            }
+            "choices" => {
+                for (choice, _) in positional_strings(child, errors) {
+                    choices.push(choice);
+                }
+            }
+            "compatible" => {
+                let mut chips = Vec::new();
+                for c in children(child) {
+                    if c.name().value() == "chip" {
+                        for (chip, _) in positional_strings(c, errors) {
+                            chips.push(chip);
+                        }
+                    } else {
+                        errors.push(err(
+                            node_range(c),
+                            format!("unknown node `{}` in `compatible`", c.name().value()),
+                            "expected `chip \"name\" ...`",
+                        ));
+                    }
+                }
+                def.compat.chips = Some(chips);
+            }
+            other => errors.push(err(
+                node_range(child),
+                format!("unknown node `{other}` in option `{name}`"),
+                "expected help, requires, requires_tools, compatible or choices",
+            )),
+        }
+    }
+
+    def.kind = match kind_name.as_str() {
+        "bool" => Kind::Bool,
+        "string" => Kind::String,
+        "list" => Kind::List,
+        "choice" => {
+            if choices.is_empty() {
+                errors.push(err(
+                    kind_span.clone(),
+                    format!("choice option `{name}` has no choices"),
+                    "add `choices \"a\" \"b\"` inside the option",
+                ));
+            }
+            Kind::Choice(choices)
+        }
+        other => {
+            errors.push(err(
+                kind_span,
+                format!("unknown kind \"{other}\""),
+                "expected bool, string, choice or list",
+            ));
+            Kind::Bool
+        }
+    };
+
+    def.default = match (&def.kind, default_entry) {
+        (Kind::Bool, None) => Some(OptValue::Bool(false)),
+        (Kind::Bool, Some(e)) => match e.value().as_bool() {
+            Some(b) => Some(OptValue::Bool(b)),
+            None => {
+                errors.push(err(
+                    entry_range(e),
+                    "bool default must be #true or #false",
+                    "KDL v2 booleans are #true / #false",
+                ));
+                None
+            }
+        },
+        (Kind::String, Some(e)) => match e.value().as_string() {
+            Some(s) => Some(OptValue::Str(s.to_string())),
+            None => {
+                errors.push(err(
+                    entry_range(e),
+                    "string default must be a string",
+                    "quote it",
+                ));
+                None
+            }
+        },
+        (Kind::Choice(cs), Some(e)) => match e.value().as_string() {
+            Some(s) if cs.iter().any(|c| c == s) => Some(OptValue::Str(s.to_string())),
+            _ => {
+                errors.push(err(
+                    entry_range(e),
+                    "default is not one of the choices",
+                    format!("choices: {}", cs.join(", ")),
+                ));
+                None
+            }
+        },
+        (Kind::List, Some(e)) => {
+            errors.push(err(
+                entry_range(e),
+                "list options cannot have a default",
+                "remove `default=`",
+            ));
+            None
+        }
+        (_, None) => None,
+    };
+
+    schema.options.push(def);
+}
+
+/// Check `to=` and `see_also` targets after every node is known.
+fn check_references(schema: &Schema, errors: &mut Vec<SchemaError>) {
+    for element in &schema.elements {
+        for attr in &element.attrs {
+            if let AttrKind::Ref { to } = &attr.kind {
+                for target in to {
+                    if schema.element(target).is_none() {
+                        errors.push(err(
+                            attr.span.clone(),
+                            format!("`{}` refers to unknown element `{target}`", attr.name),
+                            "`to=` must name an element defined in this file",
+                        ));
+                    }
+                }
+            }
+        }
+        for target in &element.see_also {
+            let known = target
+                .split_once('/')
+                .is_some_and(|(section, tag)| {
+                    schema.section_named(section).is_some() && schema.element(tag).is_some()
+                });
+            if !known {
+                errors.push(err(
+                    element.span.clone(),
+                    format!("`see_also \"{target}\"` names no element"),
+                    "write `section/tag` for an element defined in this file",
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = r##"
+section "components" {
+    summary "How a peripheral is used"
+    description "A component binds a peripheral to a purpose."
+}
+section "peripherals" {
+    summary "The chip's hardware blocks"
+    description "Each one gets an id."
+}
+element "gpio" section="peripherals" {
+    summary "A single GPIO pin"
+    attr "id" kind="ident" required=#true
+    attr "pin" kind="pin" required=#true
+    example "minimal" #"<gpio id="gpio4" pin="4" />"#
+}
+element "led" section="components" {
+    summary "An LED on a GPIO output"
+    attr "id" kind="ident" required=#true
+    attr "gpio" kind="ref" to="gpio" required=#true
+    example "minimal" #"<led id="led" gpio="$gpio4" />"#
+    see_also "peripherals/gpio"
+}
+options {
+    option "alloc" default=#true { help "heap" }
+    option "embassy" derived=#true { help "async" }
+    option "mode" kind="choice" default="fast" { choices "fast" "slow" }
+}
+"##;
+
+    #[test]
+    fn loads_sections_elements_and_options() {
+        let schema = load(SAMPLE).unwrap();
+        assert_eq!(schema.sections.len(), 2);
+        assert_eq!(schema.elements.len(), 2);
+        let led = schema.element("led").unwrap();
+        assert_eq!(led.section, "components");
+        assert_eq!(led.examples[0].title, "minimal");
+        assert_eq!(led.see_also, ["peripherals/gpio"]);
+        let gpio = schema.element("gpio").unwrap();
+        assert_eq!(gpio.attrs.len(), 2);
+        assert!(gpio.attrs[1].required);
+
+        let alloc = schema.get("alloc").unwrap();
+        assert_eq!(alloc.default, Some(OptValue::Bool(true)));
+        assert!(!alloc.derived);
+        assert!(schema.get("embassy").unwrap().derived);
+        assert_eq!(
+            schema.get("mode").unwrap().default,
+            Some(OptValue::Str("fast".into()))
+        );
+    }
+
+    #[test]
+    fn the_embedded_schema_loads_and_has_the_phase_one_vocabulary() {
+        let schema = schema();
+        for section in [
+            "espforge",
+            "peripherals",
+            "components",
+            "devices",
+            "services",
+        ] {
+            assert!(schema.section_named(section).is_some(), "{section}");
+        }
+        assert_eq!(schema.elements.len(), 5);
+        for tag in ["project", "chip", "runtime", "console", "options"] {
+            assert!(schema.element(tag).is_some(), "{tag}");
+        }
+        // The four non-espforge sections are deliberately empty in this slice.
+        assert_eq!(schema.elements_in("peripherals").count(), 0);
+        assert_eq!(schema.elements_in("components").count(), 0);
+        // Only the options helloworld depends on.
+        let names: Vec<&str> = schema.options.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "unstable-hal",
+                "alloc",
+                "embassy",
+                "probe-rs",
+                "stack-smashing-protection",
+                "wokwi"
+            ]
+        );
+        assert_eq!(
+            schema.get("unstable-hal").unwrap().default,
+            Some(OptValue::Bool(true))
+        );
+        assert_eq!(
+            schema.get("alloc").unwrap().default,
+            Some(OptValue::Bool(true))
+        );
+        assert!(schema.get("embassy").unwrap().derived);
+        assert_eq!(
+            schema.get("wokwi").unwrap().default,
+            Some(OptValue::Bool(true))
+        );
+        assert_eq!(
+            schema.get("probe-rs").unwrap().default,
+            Some(OptValue::Bool(false))
+        );
+    }
+
+    #[test]
+    fn every_example_fragment_parses_with_espf() {
+        // A fragment is the element's own lines; the contract test wraps each
+        // one in the five required sections, so this does too.
+        fn wrapped(fragment: &str) -> String {
+            if fragment.trim_start().starts_with('#') {
+                fragment.to_string()
+            } else {
+                format!(
+                    "# espforge\n{fragment}\n# peripherals\n# components\n# devices\n# services\n"
+                )
+            }
+        }
+
+        let schema = schema();
+        for element in &schema.elements {
+            for example in &element.examples {
+                let source = wrapped(&example.fragment);
+                let parsed = espf::parser::parse_espf(&source);
+                assert!(
+                    parsed.structure_errors.is_empty(),
+                    "`{}` example `{}` has structure errors: {:?}",
+                    element.tag,
+                    example.title,
+                    parsed.structure_errors
+                );
+                assert!(
+                    parsed.junk.is_empty(),
+                    "`{}` example `{}` has junk: {:?}",
+                    element.tag,
+                    example.title,
+                    parsed.junk
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bad_schemas_report_every_problem_with_a_span() {
+        let src = r##"
+section "peripherals" { summary "s"; description "d" }
+element "led" section="peripherals" {
+    summary "An LED"
+    attr "gpio" kind="ref" to="gpio"
+    example "one" #"<led id="l" />"#
+}
+"##;
+        let errors = load(src).unwrap_err();
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("unknown element `gpio`")),
+            "{messages:?}"
+        );
+        assert!(
+            errors.iter().all(|e| !e.label.is_empty()),
+            "every error explains itself"
+        );
+    }
+
+    #[test]
+    fn reserved_names_and_missing_summaries_are_errors() {
+        let src = r##"
+section "components" { summary "s"; description "d" }
+element "help" section="components" {
+    summary "s"
+    example "e" #"<help />"#
+}
+element "bare" section="components" {
+    attr "id" kind="ident"
+}
+"##;
+        let errors = load(src).unwrap_err();
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("reserved name")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("no summary")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("no example")),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn see_also_must_name_an_existing_element() {
+        let src = r##"
+section "components" { summary "s"; description "d" }
+element "led" section="components" {
+    summary "An LED"
+    example "e" #"<led id="l" />"#
+    see_also "peripherals/nope"
+}
+"##;
+        let errors = load(src).unwrap_err();
+        assert!(
+            errors[0].message.contains("names no element"),
+            "{errors:?}"
+        );
+    }
+}

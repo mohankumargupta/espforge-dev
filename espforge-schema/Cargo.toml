@@ -10,3 +10,6 @@ repository.workspace = true
 
 [dependencies]
 kdl = { workspace = true }
+
+[dev-dependencies]
+espf = { workspace = true }

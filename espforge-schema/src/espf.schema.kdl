@@ -1,0 +1,139 @@
+// The schema (KDL v2): the single source of truth for what an ESPF file may
+// contain and for the build options it can turn on.
+//
+// This is the phase-1 file cut to what is implemented: the five required
+// sections (`espforge` carries the only elements so far), and the options
+// helloworld's Cargo.toml depends on. An element is in this file if and only
+// if it is implemented; `gpio`, `led` and the rest arrive with their
+// implementations.
+//
+//   section "name" { summary ".."; description ".." }
+//   element "tag" section="name" {
+//       summary ".." [description ".."] attr "name" kind=".." [required=#true]
+//       [default=".."] [to="tag"] [of="kind"] { choices "a" "b"; help ".." }
+//       example "title" "fragment"  [see_also "section/tag"]
+//   }
+//   options {
+//       option "name" [display_name=".."] [kind="bool|string|choice|list"]
+//           [default=#true|".."] [derived=#true] [requires_nightly=#true]
+//           [selection_group=".."] {
+//           help ".."; requires "a" "b"; requires_tools "..";
+//           choices "a" "b"; compatible { chip "esp32c3" }
+//       }
+//   }
+//
+// Every element needs at least one `example`, and the tests parse them with
+// `espf`, so they cannot drift from the attributes declared here.
+
+// ---------------------------------------------------------------- espforge
+
+section "espforge" {
+    summary "The project itself: name, chip, runtime, console, options"
+    description "Settings for the build as a whole. Nothing here is referred to from other sections, so these elements need no id."
+}
+
+element "project" section="espforge" {
+    summary "Project name and description"
+    attr "name" kind="str" required=#true {
+        help "Becomes the crate name: lowercased, other characters become _."
+    }
+    attr "description" kind="str"
+    example "minimal" #"<project name="blink" />"#
+    example "with a description" #"<project name="blink" description="Blinks an LED" />"#
+}
+
+element "chip" section="espforge" {
+    summary "The ESP32 chip to build for"
+    // The list of chips comes from esp-metadata, not from this file.
+    attr "type" kind="str" required=#true
+    example "esp32c3" #"<chip type="esp32c3" />"#
+}
+
+element "runtime" section="espforge" {
+    summary "blocking or embassy (async) runtime"
+    attr "type" kind="choice" required=#true {
+        choices "blocking" "embassy"
+    }
+    example "blocking" #"<runtime type="blocking" />"#
+    example "async" #"<runtime type="embassy" />"#
+}
+
+element "console" section="espforge" {
+    summary "Where log output goes: uart or the built-in USB serial"
+    attr "type" kind="choice" default="uart" {
+        choices "uart" "jtag-serial"
+        help "jtag-serial needs a chip with USB-Serial-JTAG."
+    }
+    example "usb serial" #"<console type="jtag-serial" />"#
+}
+
+element "options" section="espforge" {
+    summary "Build options from this file's options block"
+    attr "defaults" kind="bool" default="true" {
+        help "false turns every unspecified option off."
+    }
+    example "defaults only" #"<options defaults="true" />"#
+    example "defaults off" #"<options defaults="false" />"#
+}
+
+// -------------------------------------------------------------- peripherals
+
+section "peripherals" {
+    summary "The chip's hardware blocks you use: gpio, i2c, spi, uart"
+    description "The chip's hardware blocks that your project uses. Each one gets an id that components refer to with $id."
+}
+
+// --------------------------------------------------------------- components
+
+section "components" {
+    summary "How a peripheral is used: an address on a bus, a direction"
+    description "A component binds a peripheral to a purpose. It refers to its peripheral with $id, for example i2c=\"$i2c0\"."
+}
+
+// ------------------------------------------------------------------ devices
+
+section "devices" {
+    summary "Drivers for specific parts: displays, sensors"
+    description "A device is a driver for a specific part. It refers to the component it is attached to, for example i2c_component=\"$temp_bus\"."
+}
+
+// ----------------------------------------------------------------- services
+
+section "services" {
+    summary "Software services: wifi, ntp"
+    description "Services are software, not hardware: nothing in them refers to a peripheral."
+}
+
+// ------------------------------------------------------------------- options
+//
+// What `<options ... />` and the `--option` flags can turn on.
+
+options {
+    option "unstable-hal" display_name="Enable unstable HAL features." default=#true {
+        help "This configuration enables unstable esp-hal features. These come with no stability guarantees, and could be changed or removed at any time."
+    }
+
+    option "alloc" display_name="Enable allocations via the esp-alloc crate." default=#true {
+        help "esp-alloc comes with no stability guarantees at this time."
+    }
+
+    // Computed from `<runtime type="embassy" />`; users may not set it.
+    option "embassy" display_name="Add embassy framework support." derived=#true selection_group="base-template" {
+        help "esp-rtos module responsible for embassy support comes with no stability guarantees at this time."
+        requires "unstable-hal"
+    }
+
+    option "probe-rs" display_name="Use probe-rs to flash and monitor instead of espflash." {
+        requires_tools "probe-rs"
+        help "probe-rs is a debugger that connects"
+    }
+
+    option "stack-smashing-protection" display_name="Enable stack smashing protection." requires_nightly=#true {
+        help "Requires nightly Rust. Note that this option generates additional checks in most functions and will slow down your code."
+    }
+
+    // Emit the Wokwi simulation files (diagram.json, wokwi.toml).
+    option "wokwi" display_name="Generate Wokwi simulation files." default=#true {
+        help "Writes diagram.json and wokwi.toml so the project can be simulated in Wokwi."
+    }
+}
