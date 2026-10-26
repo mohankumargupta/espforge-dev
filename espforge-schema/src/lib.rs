@@ -1073,13 +1073,42 @@ options {
         ] {
             assert!(schema.section_named(section).is_some(), "{section}");
         }
-        assert_eq!(schema.elements.len(), 5);
-        for tag in ["project", "chip", "runtime", "console", "options"] {
+        assert_eq!(schema.elements.len(), 7);
+        for tag in [
+            "project", "chip", "runtime", "console", "options", "gpio", "led",
+        ] {
             assert!(schema.element(tag).is_some(), "{tag}");
         }
-        // The four non-espforge sections are deliberately empty in this slice.
-        assert_eq!(schema.elements_in("peripherals").count(), 0);
-        assert_eq!(schema.elements_in("components").count(), 0);
+        // The two element-bearing sections have one element each; devices and
+        // services are still empty.
+        assert_eq!(schema.elements_in("peripherals").count(), 1);
+        assert_eq!(schema.elements_in("components").count(), 1);
+        assert_eq!(schema.elements_in("devices").count(), 0);
+        assert_eq!(schema.elements_in("services").count(), 0);
+
+        let gpio = schema.element("gpio").unwrap();
+        assert_eq!(gpio.section, "peripherals");
+        let names: Vec<&str> = gpio.attrs.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["id", "pin", "direction"]);
+        assert!(gpio.attrs[0].required);
+        assert!(gpio.attrs[1].required);
+        assert!(!gpio.attrs[2].required);
+        assert_eq!(
+            gpio.attrs[2].kind,
+            AttrKind::Choice(vec!["output".into(), "input".into()])
+        );
+
+        let led = schema.element("led").unwrap();
+        assert_eq!(led.section, "components");
+        assert_eq!(led.see_also, ["peripherals/gpio"]);
+        let gpio_attr = led.attrs.iter().find(|a| a.name == "gpio").unwrap();
+        assert_eq!(
+            gpio_attr.kind,
+            AttrKind::Ref {
+                to: vec!["gpio".into()]
+            }
+        );
+        assert!(gpio_attr.required);
         // Only the options helloworld depends on.
         let names: Vec<&str> = schema.options.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(

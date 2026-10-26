@@ -2,9 +2,9 @@
 // contain and for the build options it can turn on.
 //
 // This is the phase-1 file cut to what is implemented: the five required
-// sections (`espforge` carries the only elements so far), and the options
-// helloworld's Cargo.toml depends on. An element is in this file if and only
-// if it is implemented; `gpio`, `led` and the rest arrive with their
+// sections (`gpio` and `led` are the only elements outside `espforge`), and
+// the options helloworld's Cargo.toml depends on. An element is in this file
+// if and only if it is implemented; `button` and the rest arrive with their
 // implementations.
 //
 //   section "name" { summary ".."; description ".." }
@@ -83,11 +83,37 @@ section "peripherals" {
     description "The chip's hardware blocks that your project uses. Each one gets an id that components refer to with $id."
 }
 
+element "gpio" section="peripherals" {
+    summary "A single GPIO pin"
+    attr "id" kind="ident" required=#true
+    attr "pin" kind="pin" required=#true
+    attr "direction" kind="choice" {
+        choices "output" "input"
+    }
+    example "minimal" #"<gpio id="gpio18" pin="18" />"#
+    example "output" #"<gpio id="gpio18" pin="18" direction="output" />"#
+}
+
 // --------------------------------------------------------------- components
 
 section "components" {
     summary "How a peripheral is used: an address on a bus, a direction"
     description "A component binds a peripheral to a purpose. It refers to its peripheral with $id, for example i2c=\"$i2c0\"."
+}
+
+element "led" section="components" {
+    summary "An LED on a GPIO output"
+    attr "id" kind="ident" required=#true
+    attr "gpio" kind="ref" to="gpio" required=#true
+    attr "active_low" kind="bool" default="false" {
+        help "true when the LED lights on a LOW pin."
+    }
+    // Its examples are complete documents carrying their own <gpio>: anything
+    // starting with a `#` header is parsed as-is, so it must carry all five
+    // sections (three of them may be empty).
+    example "esp32c3, blocking" "# espforge\n  <project name=\"blink\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio18\" pin=\"18\" direction=\"output\" />\n# components\n  <led id=\"red_led\" gpio=\"$gpio18\" />\n# devices\n# services\n"
+    example "active low" "# espforge\n  <project name=\"blink\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio18\" pin=\"18\" direction=\"output\" />\n# components\n  <led id=\"red_led\" gpio=\"$gpio18\" active_low=\"true\" />\n# devices\n# services\n"
+    see_also "peripherals/gpio"
 }
 
 // ------------------------------------------------------------------ devices
