@@ -1,2 +1,2 @@
-chips = ["esp32c3"]
-runtimes = ["blocking"]
+chips    = ["esp32c3", "esp32s3"]
+runtimes = ["blocking", "embassy"]
