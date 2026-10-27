@@ -127,6 +127,25 @@ element "i2c" section="peripherals" {
     see_also "components/i2c_component"
 }
 
+element "spi" section="peripherals" {
+    summary "SPI bus controller"
+    attr "id" kind="ident" required=#true {
+        help "spi2: the esp-hal peripheral this runtime type builds."
+    }
+    attr "sclk" kind="pin" required=#true
+    attr "mosi" kind="pin" required=#true
+    attr "miso" kind="pin" {
+        help "Displays generally omit it."
+    }
+    attr "mode" kind="u32" default="0" range="0..=3"
+    attr "frequency" kind="freq" {
+        help "Defaults to 1MHz when omitted."
+    }
+    example "write-only" #"<spi id="spi2" sclk="6" mosi="7" />"#
+    example "full duplex" #"<spi id="spi2" sclk="8" mosi="7" miso="6" mode="0" frequency="100kHz" />"#
+    see_also "components/spi_component"
+}
+
 // --------------------------------------------------------------- components
 
 section "components" {
@@ -175,6 +194,20 @@ element "i2c_component" section="components" {
     }
     example "temperature sensor" #"<i2c_component id="temp_bus" i2c="$i2c0" address="0x48" />"#
     see_also "peripherals/i2c"
+}
+
+element "spi_component" section="components" {
+    summary "A chip-select on an SPI bus"
+    attr "id" kind="ident" required=#true
+    attr "spi" kind="ref" to="spi" required=#true
+    attr "mode" kind="u32" default="0" range="0..=3" {
+        help "SPI mode, 0 to 3. Optional on the component; the SPI examples keep it on <spi>."
+    }
+    attr "cs" kind="pin_or_ref" required=#true {
+        help "A GPIO number (`cs=\"9\"`), a <gpio> id (`cs=\"gpio5\"`) or a reference to one (`cs=\"$gpio5\"`)."
+    }
+    example "display bus" #"<spi_component id="display_bus" spi="$spi2" mode="0" cs="gpio5" />"#
+    see_also "peripherals/spi"
 }
 
 // ------------------------------------------------------------------ devices

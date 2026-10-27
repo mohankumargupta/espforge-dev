@@ -10,13 +10,14 @@ use espforge_diagnostics::{Diagnostic, codes};
 use espforge_schema::schema;
 
 use crate::element::{Element, LowerCx};
-use crate::model::{Board, Bus, GpioDecl, Meta};
+use crate::model::{Board, Bus, Component, GpioDecl, Meta};
 use crate::registry;
 
 /// Lower both hardware sections onto `meta`.
 ///
-/// Diagnostics are collected across both sections and returned together; a
-/// `Board` exists only when there are none.
+/// Diagnostics are collected and returned together; a `Board` exists only when
+/// there are none. A bus pin on a declared `<gpio>` stops the walk before the
+/// components, in the legacy order the diagnostics corpus pins.
 pub fn lower(
     meta: Meta,
     peripherals: &[ParsedNode<'_>],
@@ -34,7 +35,41 @@ pub fn lower(
         return cx.into_board(meta);
     }
     lower_section("components", components, &mut cx);
+    check_spi_cs_gpio_declarations(&mut cx);
     cx.into_board(meta)
+}
+
+/// A chip select written as a pin number that collides with a declared
+/// `<gpio>`: the gpio is a second user of the pin unless the chip select named
+/// that gpio itself. Runs after the components are lowered, because the
+/// component records which gpio (if any) its `cs` named.
+fn check_spi_cs_gpio_declarations(cx: &mut LowerCx) {
+    let gpios: Vec<GpioDecl> = cx.gpios().to_vec();
+    let cs_gpios: Vec<String> = cx.cs_gpios().to_vec();
+    let mut found: Option<(std::ops::Range<usize>, String)> = None;
+    for component in cx.components() {
+        let Component::Spi(spi) = component else {
+            continue;
+        };
+        for gpio in &gpios {
+            if gpio.pin == spi.cs.pin().0 && !cs_gpios.contains(&gpio.id.raw) {
+                found = Some((
+                    gpio.span.clone(),
+                    format!(
+                        "<gpio id=\"{}\"> and <spi_component id=\"{}\"> both use GPIO{}",
+                        gpio.id.raw, spi.id.raw, gpio.pin
+                    ),
+                ));
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    if let Some((span, label)) = found {
+        cx.report(codes::CONFLICT_PIN, span, "pin conflict", label);
+    }
 }
 
 /// A bus pin that a `<gpio>` declared is a wiring error: the gpio is a second
@@ -279,7 +314,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`"
+            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`"
         );
     }
 
@@ -308,7 +343,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::COMPONENT_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`, `<i2c_component>`"
+            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`, `<i2c_component>`, `<spi_component>`"
         );
     }
 
@@ -455,7 +490,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`"
+            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`"
         );
     }
 
@@ -591,6 +626,132 @@ mod tests {
             errors[0].labels[0].text,
             "❌ [i2c_component] 'i2c_tester' invalid hex address '0xZZ'"
         );
+    }
+
+    const SPI: &str = "# espforge\n\
+        \x20 <project name=\"spi\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"blocking\" />\n\
+        # peripherals\n\
+        \x20 <spi id=\"spi2\" sclk=\"8\" mosi=\"7\" miso=\"6\" mode=\"0\" frequency=\"100kHz\" />\n\
+        # components\n\
+        \x20 <spi_component id=\"spi_tester\" spi=\"$spi2\" cs=\"9\" />\n\
+        # devices\n\
+        # services\n";
+
+    #[test]
+    fn spi_lowers_to_a_full_duplex_bus_and_a_device() {
+        let board = lower_src(SPI).expect("spi lowers");
+        assert_eq!(board.components.len(), 1);
+        let Bus::Spi {
+            peripheral,
+            sclk,
+            mosi,
+            miso,
+            khz,
+            mode,
+            ..
+        } = &board.resources.buses()[0]
+        else {
+            panic!("the bus is an spi bus");
+        };
+        assert_eq!(peripheral, "SPI2");
+        assert_eq!(
+            (sclk.pin().0, mosi.pin().0, miso.as_ref().unwrap().pin().0),
+            (8, 7, 6)
+        );
+        assert_eq!((*khz, *mode), (100, 0));
+        assert_eq!(
+            board.resources.claim_of(Pin(6)).unwrap().need,
+            PinUse::Bidirectional
+        );
+    }
+
+    #[test]
+    fn only_spi2_is_a_valid_spi_id() {
+        let errors = lower_src(&SPI.replace("id=\"spi2\"", "id=\"spi3\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::SPI_INVALID_ID);
+        assert_eq!(errors[0].message, "invalid spi id");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<spi id=\"spi3\">: the id must be spi2"
+        );
+    }
+
+    #[test]
+    fn a_missing_miso_is_a_write_only_bus() {
+        let board = lower_src(&SPI.replace(" miso=\"6\"", "")).expect("write-only bus");
+        let Bus::Spi { miso, .. } = &board.resources.buses()[0] else {
+            panic!("the bus is an spi bus");
+        };
+        assert!(miso.is_none());
+    }
+
+    #[test]
+    fn an_out_of_range_spi_mode_is_refused() {
+        let errors = lower_src(&SPI.replace("mode=\"0\"", "mode=\"7\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::SPI_INVALID_MODE);
+        assert_eq!(errors[0].message, "invalid spi mode");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<spi id=\"spi2\"> mode=\"7\" must be 0, 1, 2 or 3"
+        );
+    }
+
+    #[test]
+    fn spi_sclk_and_mosi_on_one_pin_are_spi_wiring() {
+        let errors = lower_src(&SPI.replace("mosi=\"7\"", "mosi=\"8\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::CONFLICT_SPI_WIRING);
+        assert_eq!(errors[0].message, "spi wiring");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<spi id=\"spi2\"> sclk and mosi cannot both be GPIO8"
+        );
+    }
+
+    #[test]
+    fn a_chip_select_reference_must_exist() {
+        let errors = lower_src(&SPI.replace("cs=\"9\"", "cs=\"$gpioX\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_CS);
+        assert_eq!(errors[0].message, "invalid spi_component");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "❌ [spi_component] 'spi_tester' cs references undefined gpio 'gpioX'"
+        );
+    }
+
+    #[test]
+    fn a_chip_select_pin_on_a_declared_gpio_points_at_the_gpio() {
+        let src = SPI.replace(
+            "  <spi id=\"spi2\"",
+            "  <gpio id=\"g\" pin=\"9\" />\n  <spi id=\"spi2\"",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::CONFLICT_PIN);
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<gpio id=\"g\"> and <spi_component id=\"spi_tester\"> both use GPIO9"
+        );
+    }
+
+    #[test]
+    fn a_chip_select_naming_its_own_gpio_is_not_a_conflict() {
+        let src = SPI.replace("cs=\"9\"", "cs=\"$gpio9\"").replace(
+            "  <spi id=\"spi2\"",
+            "  <gpio id=\"gpio9\" pin=\"9\" />\n  <spi id=\"spi2\"",
+        );
+        let board = lower_src(&src).expect("cs names its own gpio");
+        assert_eq!(board.components.len(), 1);
+    }
+
+    #[test]
+    fn two_spi_devices_on_one_bus_are_allowed() {
+        let src = SPI.replace(
+            "  <spi_component id=\"spi_tester\" spi=\"$spi2\" cs=\"9\" />\n",
+            "  <spi_component id=\"spi_tester\" spi=\"$spi2\" cs=\"9\" />\n  <spi_component id=\"other\" spi=\"$spi2\" cs=\"10\" />\n",
+        );
+        let board = lower_src(&src).expect("one bus, two devices");
+        assert_eq!(board.components.len(), 2);
     }
 
     #[test]

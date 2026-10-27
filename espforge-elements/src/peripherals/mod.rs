@@ -2,6 +2,7 @@
 
 pub mod gpio;
 pub mod i2c;
+pub mod spi;
 
 /// A `frequency=` value like `100kHz` or `400kHz` -> kHz; anything else is
 /// told off. `tag` is the element name used in the diagnostics (`i2c`, `spi`).

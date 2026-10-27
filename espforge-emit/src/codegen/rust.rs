@@ -54,6 +54,7 @@ fn generated(board: &Board, _meta: &Meta) -> Result<String> {
     let parts = collect_components(board);
     let fields = parts.fields;
     let inits = parts.inits;
+    let prelude = parts.prelude;
 
     let tokens = quote::quote! {
         #![allow(dead_code, unused_variables)]
@@ -76,6 +77,7 @@ fn generated(board: &Board, _meta: &Meta) -> Result<String> {
 
         impl Components {
             pub fn new(registry: &mut PeripheralRegistry) -> Self {
+                #(#prelude)*
                 Self {
                     #(#inits)*
                 }

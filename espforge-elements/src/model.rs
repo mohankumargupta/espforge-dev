@@ -499,6 +499,7 @@ macro_rules! component_enum {
 component_enum! {
     Recipe(crate::components::recipe::RecipeComponent),
     I2c(crate::components::i2c::I2cComponent),
+    Spi(crate::components::spi::SpiComponent),
 }
 
 /// Everything the emitters need: the project settings, the resources it owns

@@ -244,13 +244,17 @@ impl EmitCx {
     }
 
     /// A statement that must appear before `Self { .. }`, emitted at most once
-    /// per key, in first-use order.
+    /// per key, in first-use order. Returns whether this call inserted it, so
+    /// the caller can also emit the matching safety note exactly once.
     ///
     /// The SPI prelude is the caller: two devices on one bus must not build
     /// the bus twice, and a bus with no device must not be built at all.
-    pub fn once(&mut self, key: &str, statement: TokenStream) {
+    pub fn once(&mut self, key: &str, statement: TokenStream) -> bool {
         if self.once.insert(key.to_string()) {
             self.prelude.push(statement);
+            true
+        } else {
+            false
         }
     }
 
@@ -454,4 +458,22 @@ pub fn is_rust_ident(text: &str) -> bool {
     !text.is_empty()
         && !text.starts_with(|c: char| c.is_ascii_digit())
         && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    #[test]
+    fn once_emits_one_statement_per_key_in_first_use_order() {
+        let mut cx = EmitCx::new();
+        assert!(cx.once("spi2_bus", quote! { let a = 1; }));
+        assert!(!cx.once("spi2_bus", quote! { let a = 1; }));
+        assert!(cx.once("spi3_bus", quote! { let b = 2; }));
+
+        let parts = cx.into_parts();
+        let statements: Vec<String> = parts.prelude.iter().map(ToString::to_string).collect();
+        assert_eq!(statements, ["let a = 1 ;", "let b = 2 ;"]);
+    }
 }

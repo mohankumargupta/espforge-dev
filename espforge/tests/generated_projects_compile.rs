@@ -131,6 +131,18 @@ const CASES: &[Case] = &[
         inline: None,
     },
     Case {
+        example: "04.Communication/spi_example",
+        chip: "esp32c3",
+        runtime: Runtime::Blocking,
+        inline: None,
+    },
+    Case {
+        example: "04.Communication/spi_example_async",
+        chip: "esp32c3",
+        runtime: Runtime::Embassy,
+        inline: None,
+    },
+    Case {
         example: "04.Communication/i2c_example",
         chip: "esp32s3",
         runtime: Runtime::Blocking,

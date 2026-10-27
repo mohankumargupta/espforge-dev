@@ -855,10 +855,13 @@ dependencies = [
 name = "espforge-runtime"
 version = "0.6.0"
 dependencies = [
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "esp-hal",
  "log",
+ "static_cell",
 ]
 
 [[package]]

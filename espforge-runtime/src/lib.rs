@@ -43,7 +43,9 @@ mod hw {
     use core::cell::RefCell;
 
     mod i2c;
+    mod spi;
     pub use i2c::*;
+    pub use spi::*;
 
     use esp_hal::gpio::Level;
     use esp_hal::gpio::{Input, InputConfig, InputPin, Pull};
@@ -54,14 +56,12 @@ mod hw {
     /// - `embassy` feature: `delay_ms` is `async` and yields via `embassy_time`.
     #[derive(Clone, Copy)]
     pub struct Delay {
-        #[cfg(not(feature = "embassy"))]
         inner: esp_hal::delay::Delay,
     }
 
     impl Delay {
         pub fn new() -> Self {
             Delay {
-                #[cfg(not(feature = "embassy"))]
                 inner: esp_hal::delay::Delay::new(),
             }
         }
@@ -74,6 +74,13 @@ mod hw {
         #[cfg(feature = "embassy")]
         pub async fn delay_ms(&self, ms: u32) {
             embassy_time::Timer::after(embassy_time::Duration::from_millis(ms as u64)).await;
+        }
+
+        /// Busy-waits for `ns` nanoseconds. Used by the SPI device for the
+        /// `DelayNs` op inside a transaction; those waits are microsecond
+        /// scale, so a busy wait is fine even under embassy.
+        pub fn delay_ns(&self, ns: u32) {
+            self.inner.delay_nanos(ns);
         }
     }
 
