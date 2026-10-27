@@ -1302,16 +1302,25 @@ options {
         ] {
             assert!(schema.section_named(section).is_some(), "{section}");
         }
-        assert_eq!(schema.elements.len(), 8);
+        assert_eq!(schema.elements.len(), 10);
         for tag in [
-            "project", "chip", "runtime", "console", "options", "gpio", "led", "button",
+            "project",
+            "chip",
+            "runtime",
+            "console",
+            "options",
+            "gpio",
+            "i2c",
+            "led",
+            "button",
+            "i2c_component",
         ] {
             assert!(schema.element(tag).is_some(), "{tag}");
         }
-        // `gpio` is the only peripheral; `led` and `button` are the components;
-        // devices and services are still empty.
-        assert_eq!(schema.elements_in("peripherals").count(), 1);
-        assert_eq!(schema.elements_in("components").count(), 2);
+        // `gpio` and `i2c` are the peripherals; `led`, `button` and
+        // `i2c_component` the components; devices and services are still empty.
+        assert_eq!(schema.elements_in("peripherals").count(), 2);
+        assert_eq!(schema.elements_in("components").count(), 3);
         assert_eq!(schema.elements_in("devices").count(), 0);
         assert_eq!(schema.elements_in("services").count(), 0);
 

@@ -266,11 +266,41 @@ fn every_declared_cell_is_byte_identical_to_its_golden() {
         let out = dir.path().join("project");
         generate_cell(cell, &out);
 
+        // The 12 emitted artifacts plus `src/app.rs`, and (for an example
+        // with a custom Wokwi chip) the seeded `chip.json` / `chip.wasm`.
+        const BASE_FILES: [&str; 13] = [
+            "build.rs",
+            "Cargo.toml",
+            ".cargo/config.toml",
+            ".cargo/esp-config.toml",
+            "diagram.json",
+            ".espforge/manifest.json",
+            "README.txt",
+            "rust-toolchain.toml",
+            "src/app.rs",
+            "src/bin/main.rs",
+            "src/generated.rs",
+            "src/lib.rs",
+            "wokwi.toml",
+        ];
         let files = tree(&out);
-        assert_eq!(
-            files.len(),
-            13,
-            "{}: the 12 emitted artifacts plus src/app.rs ({files:?})",
+        for path in BASE_FILES {
+            assert!(
+                files.contains(path),
+                "{}: missing `{path}` ({files:?})",
+                cell.slug
+            );
+        }
+        let extra: Vec<&String> = files
+            .iter()
+            .filter(|path| {
+                !BASE_FILES.contains(&path.as_str())
+                    && !matches!(path.as_str(), "chip.json" | "chip.wasm")
+            })
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "{}: unexpected generated files {extra:?}",
             cell.slug
         );
 

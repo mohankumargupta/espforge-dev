@@ -112,10 +112,17 @@ fn collect_components(board: &Board) -> espforge_elements::element::EmitParts {
 
 /// Turn the elements' `(anchor, line)` notes into comment blocks, in board
 /// order.
-fn safety_comments(safety: &[(String, String)]) -> Vec<Comment> {
+fn safety_comments(safety: &[(String, Vec<String>)]) -> Vec<Comment> {
     safety
         .iter()
-        .map(|(anchor, line)| Comment::new(anchor.clone(), line.clone()))
+        .map(|(anchor, lines)| {
+            if let [line] = lines.as_slice() {
+                Comment::new(anchor.clone(), line.clone())
+            } else {
+                let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+                Comment::block(anchor.clone(), &refs)
+            }
+        })
         .collect()
 }
 

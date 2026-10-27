@@ -42,6 +42,9 @@ impl Default for Logger {
 mod hw {
     use core::cell::RefCell;
 
+    mod i2c;
+    pub use i2c::*;
+
     use esp_hal::gpio::Level;
     use esp_hal::gpio::{Input, InputConfig, InputPin, Pull};
 

@@ -10,7 +10,7 @@ use espforge_diagnostics::{Diagnostic, codes};
 use espforge_schema::schema;
 
 use crate::element::{Element, LowerCx};
-use crate::model::{Board, Meta};
+use crate::model::{Board, Bus, GpioDecl, Meta};
 use crate::registry;
 
 /// Lower both hardware sections onto `meta`.
@@ -24,8 +24,63 @@ pub fn lower(
 ) -> Result<Board, Vec<Diagnostic>> {
     let mut cx = LowerCx::new();
     lower_section("peripherals", peripherals, &mut cx);
+    check_bus_gpio_declarations(&mut cx);
+    // Legacy stopped at the first bus/gpio conflict before a component could
+    // claim the same pin, and the corpus pins that single error. Keep that
+    // order: a component is not lowered onto a pin the board already called
+    // out. Peripherals are all lowered first, so a `<gpio>` written after the
+    // bus that uses its pin still reaches this pass.
+    if cx.has_errors() {
+        return cx.into_board(meta);
+    }
     lower_section("components", components, &mut cx);
     cx.into_board(meta)
+}
+
+/// A bus pin that a `<gpio>` declared is a wiring error: the gpio is a second
+/// user of the pin, and the diagnostic points at the gpio (as the legacy
+/// `check_bus_gpio_declarations` did).
+fn check_bus_gpio_declarations(cx: &mut LowerCx) {
+    let gpios: Vec<GpioDecl> = cx.gpios().to_vec();
+    let mut found: Option<(std::ops::Range<usize>, String)> = None;
+    for bus in cx.buses() {
+        let (tag, id, pins) = match bus {
+            Bus::I2c { id, sda, scl, .. } => ("i2c", id, vec![sda.pin().0, scl.pin().0]),
+            Bus::Spi {
+                id,
+                sclk,
+                mosi,
+                miso,
+                ..
+            } => (
+                "spi",
+                id,
+                vec![sclk.pin().0, mosi.pin().0]
+                    .into_iter()
+                    .chain(miso.iter().map(|pin| pin.pin().0))
+                    .collect(),
+            ),
+            Bus::Uart { id, tx, rx, .. } => ("uart", id, vec![tx.pin().0, rx.pin().0]),
+        };
+        for gpio in &gpios {
+            if pins.contains(&gpio.pin) {
+                found = Some((
+                    gpio.span.clone(),
+                    format!(
+                        "<gpio id=\"{}\"> and <{tag} id=\"{}\"> both use GPIO{}",
+                        gpio.id.raw, id.raw, gpio.pin
+                    ),
+                ));
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    if let Some((span, label)) = found {
+        cx.report(codes::CONFLICT_PIN, span, "pin conflict", label);
+    }
 }
 
 fn lower_section(section: &str, nodes: &[ParsedNode<'_>], cx: &mut LowerCx) {
@@ -224,7 +279,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`"
+            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`"
         );
     }
 
@@ -253,7 +308,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::COMPONENT_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`"
+            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`, `<i2c_component>`"
         );
     }
 
@@ -400,7 +455,141 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`"
+            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`"
+        );
+    }
+
+    const I2C: &str = "# espforge\n\
+        \x20 <project name=\"i2c\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"blocking\" />\n\
+        # peripherals\n\
+        \x20 <i2c id=\"i2c0\" sda=\"6\" scl=\"7\" frequency=\"100kHz\" />\n\
+        # components\n\
+        \x20 <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n\
+        # devices\n\
+        # services\n";
+
+    #[test]
+    fn i2c_lowers_to_a_bus_and_one_component() {
+        let board = lower_src(I2C).expect("i2c lowers");
+        assert_eq!(board.components.len(), 1);
+        let Component::I2c(component) = &board.components[0] else {
+            panic!("the component is an i2c component");
+        };
+        assert_eq!(component.id.raw, "i2c_tester");
+        let Bus::I2c {
+            id,
+            peripheral,
+            sda,
+            scl,
+            khz,
+            used_by,
+        } = &board.resources.buses()[0]
+        else {
+            panic!("the bus is an i2c bus");
+        };
+        assert_eq!(id.raw, "i2c0");
+        assert_eq!(peripheral, "I2C0");
+        assert_eq!((sda.pin().0, scl.pin().0, *khz), (6, 7, 100));
+        assert_eq!(
+            used_by.as_ref().map(|id| id.raw.as_str()),
+            Some("i2c_tester")
+        );
+        assert_eq!(
+            board.resources.claim_of(Pin(6)).unwrap().need,
+            PinUse::Bidirectional
+        );
+        assert_eq!(
+            board.resources.claim_of(Pin(7)).unwrap().need,
+            PinUse::Bidirectional
+        );
+    }
+
+    #[test]
+    fn i2c_ids_are_the_three_esp_hal_peripherals() {
+        let errors = lower_src(&I2C.replace("id=\"i2c0\"", "id=\"bus\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::I2C_INVALID_ID);
+        assert_eq!(errors[0].message, "invalid i2c id");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<i2c id=\"bus\">: the id must be i2c0, i2c1 or i2c2"
+        );
+    }
+
+    #[test]
+    fn an_i2c_frequency_must_be_khz() {
+        let errors =
+            lower_src(&I2C.replace("frequency=\"100kHz\"", "frequency=\"fast\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::I2C_INVALID_FREQUENCY);
+        assert_eq!(errors[0].message, "invalid i2c frequency");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<i2c id=\"i2c0\"> frequency=\"fast\" is not a frequency: use e.g. `100kHz`"
+        );
+    }
+
+    #[test]
+    fn i2c_sda_and_scl_on_one_pin_are_i2c_wiring() {
+        let errors = lower_src(&I2C.replace("scl=\"7\"", "scl=\"6\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::CONFLICT_I2C_WIRING);
+        assert_eq!(errors[0].message, "i2c wiring");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<i2c id=\"i2c0\"> sda and scl cannot both be GPIO6"
+        );
+    }
+
+    #[test]
+    fn a_bus_pin_on_a_declared_gpio_points_at_the_gpio() {
+        let src = I2C.replace(
+            "  <i2c id=\"i2c0\"",
+            "  <gpio id=\"g\" pin=\"6\" />\n  <i2c id=\"i2c0\"",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::CONFLICT_PIN);
+        assert_eq!(errors[0].message, "pin conflict");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<gpio id=\"g\"> and <i2c id=\"i2c0\"> both use GPIO6"
+        );
+    }
+
+    #[test]
+    fn one_i2c_bus_takes_exactly_one_component() {
+        let src = I2C.replace(
+            "  <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n",
+            "  <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n  <i2c_component id=\"other\" i2c=\"$i2c0\" />\n",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_I2C_BUS_USED);
+        assert_eq!(errors[0].message, "i2c bus already used");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<i2c_component id=\"i2c_tester\"> and <i2c_component id=\"other\"> both use <i2c id=\"i2c0\">"
+        );
+    }
+
+    #[test]
+    fn an_unknown_i2c_reference_is_reported() {
+        let errors = lower_src(&I2C.replace("$i2c0", "$i2c9")).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_UNKNOWN_BUS);
+        assert_eq!(errors[0].message, "unknown i2c bus");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<i2c_component id=\"i2c_tester\"> refers to `i2c9`, which is not an <i2c> in `# peripherals`"
+        );
+    }
+
+    #[test]
+    fn an_i2c_address_must_parse() {
+        let src = I2C.replace("i2c=\"$i2c0\" />", "i2c=\"$i2c0\" address=\"0xZZ\" />");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_I2C);
+        assert_eq!(errors[0].message, "invalid i2c_component");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "❌ [i2c_component] 'i2c_tester' invalid hex address '0xZZ'"
         );
     }
 

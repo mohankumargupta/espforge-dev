@@ -99,6 +99,34 @@ element "gpio" section="peripherals" {
     example "output" #"<gpio id="gpio18" pin="18" direction="output" />"#
 }
 
+element "i2c" section="peripherals" {
+    summary "I2C bus controller"
+    description #"Declares an I2C controller. Reference it from a component with i2c="$id"."#
+    attr "id" kind="ident" required=#true {
+        help "i2c0, i2c1 or i2c2: the id names the esp-hal peripheral."
+    }
+    attr "sda" kind="pin" required=#true {
+        help "GPIO number; must be valid for the chosen chip."
+    }
+    attr "scl" kind="pin" required=#true
+    attr "frequency" kind="freq" default="100kHz"
+    example "minimal" #"<i2c id="i2c0" sda="6" scl="7" />"#
+    example "with a bus speed" #"<i2c id="i2c0" sda="6" scl="7" frequency="400kHz" />"#
+    example "with a component" #"""
+        # espforge
+          <project name="i2c" />
+          <chip type="esp32c3" />
+          <runtime type="blocking" />
+        # peripherals
+          <i2c id="i2c0" sda="6" scl="7" />
+        # components
+          <i2c_component id="temp_bus" i2c="$i2c0" address="0x48" />
+        # devices
+        # services
+        """#
+    see_also "components/i2c_component"
+}
+
 // --------------------------------------------------------------- components
 
 section "components" {
@@ -134,6 +162,19 @@ element "button" section="components" {
     example "esp32c3, blocking" "# espforge\n  <project name=\"button\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />\n# components\n  <button id=\"button\" gpio=\"$gpio9\" />\n# devices\n# services\n"
     example "pull-up" "# espforge\n  <project name=\"button\" />\n  <chip type=\"esp32c3\" />\n  <runtime type=\"blocking\" />\n# peripherals\n  <gpio id=\"gpio9\" pin=\"9\" direction=\"input\" />\n# components\n  <button id=\"button\" gpio=\"$gpio9\" pull_up=\"true\" />\n# devices\n# services\n"
     see_also "peripherals/gpio"
+}
+
+element "i2c_component" section="components" {
+    summary "A device address on an I2C bus"
+    attr "id" kind="ident" required=#true
+    attr "i2c" kind="ref" to="i2c" required=#true
+    // Optional: a bus-level component (an I2C scanner) has no one address;
+    // a driver that talks to a fixed part may still declare it.
+    attr "address" kind="hex" {
+        help "Omit for a bus-only component (for example an I2C scanner)."
+    }
+    example "temperature sensor" #"<i2c_component id="temp_bus" i2c="$i2c0" address="0x48" />"#
+    see_also "peripherals/i2c"
 }
 
 // ------------------------------------------------------------------ devices

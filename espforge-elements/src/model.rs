@@ -129,7 +129,12 @@ pub enum OwnerKind {
     Gpio,
     /// A component built from a recipe; carries its schema tag.
     Recipe(&'static str),
-    // The bus kinds arrive with their buses.
+    I2c,
+    Spi,
+    Uart,
+    I2cComponent,
+    SpiComponent,
+    UartComponent,
 }
 
 impl OwnerKind {
@@ -138,6 +143,12 @@ impl OwnerKind {
         match self {
             OwnerKind::Gpio => "gpio",
             OwnerKind::Recipe(tag) => tag,
+            OwnerKind::I2c => "i2c",
+            OwnerKind::Spi => "spi",
+            OwnerKind::Uart => "uart",
+            OwnerKind::I2cComponent => "i2c_component",
+            OwnerKind::SpiComponent => "spi_component",
+            OwnerKind::UartComponent => "uart_component",
         }
     }
 }
@@ -214,13 +225,78 @@ pub struct Conflict {
     pub incoming: Claim,
 }
 
-/// Pins: the resources a board owns.
-///
-/// Buses and shared peripherals return in phase 3, with the elements that
-/// need them.
+/// Where a bus lives in [`ResourceGraph::buses`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BusId(pub usize);
+
+/// A bus and the pins it owns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Bus {
+    I2c {
+        id: Ident,
+        /// Upper-cased esp-hal peripheral name (`I2C0`, `I2C1`).
+        peripheral: String,
+        sda: ClaimedPin,
+        scl: ClaimedPin,
+        /// Bus frequency in kHz.
+        khz: u32,
+        /// The component riding on this bus, once one is attached.
+        used_by: Option<Ident>,
+    },
+    Spi {
+        id: Ident,
+        /// Upper-cased esp-hal peripheral name (`SPI2`).
+        peripheral: String,
+        sclk: ClaimedPin,
+        mosi: ClaimedPin,
+        /// `None` is a write-only bus (no MISO pin).
+        miso: Option<ClaimedPin>,
+        /// Bus frequency in kHz.
+        khz: u32,
+        mode: u8,
+    },
+    Uart {
+        id: Ident,
+        /// Upper-cased esp-hal peripheral name (`UART0`, `UART1`), which may
+        /// differ from the id when `uart="UART1"` is written explicitly.
+        peripheral: String,
+        tx: ClaimedPin,
+        rx: ClaimedPin,
+        used_by: Option<Ident>,
+    },
+}
+
+impl Bus {
+    /// The bus id as the user wrote it.
+    pub fn id(&self) -> &Ident {
+        match self {
+            Bus::I2c { id, .. } | Bus::Spi { id, .. } | Bus::Uart { id, .. } => id,
+        }
+    }
+}
+
+/// One claim on a named hardware peripheral (`UART1`, `I2C0`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeripheralClaim {
+    pub owner: Owner,
+    /// The claiming element's node span.
+    pub span: Range<usize>,
+}
+
+/// Two elements claiming the same hardware peripheral.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeripheralClash {
+    pub peripheral: String,
+    pub existing: PeripheralClaim,
+    pub incoming: PeripheralClaim,
+}
+
+/// Pins, peripherals and buses: the resources a board owns.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceGraph {
     pins: BTreeMap<Pin, Claim>,
+    peripherals: BTreeMap<String, PeripheralClaim>,
+    buses: Vec<Bus>,
 }
 
 impl ResourceGraph {
@@ -267,6 +343,57 @@ impl ResourceGraph {
         })
     }
 
+    /// Claim a named hardware peripheral (`UART1`, `I2C0`) for `owner`.
+    ///
+    /// A second claim is the "peripheral clash" case: the board drives at
+    /// most one component per physical peripheral.
+    pub fn claim_peripheral(
+        &mut self,
+        peripheral: impl Into<String>,
+        owner: Owner,
+        span: Range<usize>,
+    ) -> Result<(), PeripheralClash> {
+        let peripheral = peripheral.into();
+        let incoming = PeripheralClaim { owner, span };
+        if let Some(existing) = self.peripherals.get(&peripheral) {
+            return Err(PeripheralClash {
+                peripheral,
+                existing: existing.clone(),
+                incoming,
+            });
+        }
+        self.peripherals.insert(peripheral, incoming);
+        Ok(())
+    }
+
+    /// Append a bus and return its id. Bus ids are positional and assigned in
+    /// construction order (source order).
+    pub fn add_bus(&mut self, bus: Bus) -> BusId {
+        let id = BusId(self.buses.len());
+        self.buses.push(bus);
+        id
+    }
+
+    pub fn bus(&self, id: BusId) -> Option<&Bus> {
+        self.buses.get(id.0)
+    }
+
+    pub fn bus_mut(&mut self, id: BusId) -> Option<&mut Bus> {
+        self.buses.get_mut(id.0)
+    }
+
+    pub fn buses(&self) -> &[Bus] {
+        &self.buses
+    }
+
+    /// The bus whose id is `name`, in declaration order.
+    pub fn bus_by_name(&self, name: &str) -> Option<BusId> {
+        self.buses
+            .iter()
+            .position(|bus| bus.id().as_str() == name)
+            .map(BusId)
+    }
+
     /// The claim on `pin`, if any.
     pub fn claim_of(&self, pin: Pin) -> Option<&Claim> {
         self.pins.get(&pin)
@@ -275,6 +402,13 @@ impl ResourceGraph {
     /// Every pin claim, in pin order (the map is a `BTreeMap`).
     pub fn pin_claims(&self) -> impl Iterator<Item = (Pin, &Claim)> {
         self.pins.iter().map(|(&pin, claim)| (pin, claim))
+    }
+
+    /// Every peripheral claim, in name order.
+    pub fn peripheral_claims(&self) -> impl Iterator<Item = (&str, &PeripheralClaim)> {
+        self.peripherals
+            .iter()
+            .map(|(name, claim)| (name.as_str(), claim))
     }
 }
 
@@ -294,6 +428,32 @@ pub struct GpioDecl {
     pub id: Ident,
     pub pin: u8,
     pub direction: Option<Direction>,
+    /// The `<gpio ...>` node's span, for pin-conflict diagnostics.
+    pub span: Range<usize>,
+}
+
+/// UART parity, in the IR's own vocabulary. The lowering maps the generated
+/// schema choice onto this; the emitter maps it onto `esp_hal`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Parity {
+    #[default]
+    None,
+    Even,
+    Odd,
+}
+
+/// UART stop bits, in the IR's own vocabulary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StopBits {
+    #[default]
+    One,
+    Two,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Framing {
+    pub parity: Parity,
+    pub stop_bits: StopBits,
 }
 
 /// One line per component variant generates [`Component::id`] and the
@@ -338,6 +498,7 @@ macro_rules! component_enum {
 
 component_enum! {
     Recipe(crate::components::recipe::RecipeComponent),
+    I2c(crate::components::i2c::I2cComponent),
 }
 
 /// Everything the emitters need: the project settings, the resources it owns

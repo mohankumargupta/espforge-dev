@@ -79,25 +79,73 @@ codes! {
     GPIO_INVALID_PIN = "E0502";
     /// `<gpio direction>` outside `input`/`output`.
     GPIO_INVALID_DIRECTION = "E0503";
+    /// An `<i2c>` id that is not `i2c0`, `i2c1` or `i2c2`.
+    I2C_INVALID_ID = "E0504";
+    /// An `<i2c>` pin that is not a GPIO number.
+    I2C_INVALID_PIN = "E0505";
+    /// An `<i2c frequency>` that is not `100kHz`-shaped.
+    I2C_INVALID_FREQUENCY = "E0506";
+    /// An `<spi>` id other than `spi2`.
+    SPI_INVALID_ID = "E0507";
+    /// An `<spi>` pin that is not a GPIO number.
+    SPI_INVALID_PIN = "E0508";
+    /// An `<spi mode>` outside 0..=3.
+    SPI_INVALID_MODE = "E0509";
+    /// An `<spi frequency>` that is not `100kHz`-shaped.
+    SPI_INVALID_FREQUENCY = "E0510";
+    /// A `<uart>` id that is not `uart0`..`uart3`.
+    UART_INVALID_ID = "E0511";
+    /// A `<uart uart=>` value outside `UART0`..`UART3`.
+    UART_INVALID_PERIPHERAL = "E0512";
+    /// A `<uart>` pin that is not a GPIO number.
+    UART_INVALID_PIN = "E0513";
 
     /// An `<led>` that cannot be built.
     COMPONENT_INVALID_LED = "E0601";
     /// A `<button>` that cannot be built.
     COMPONENT_INVALID_BUTTON = "E0602";
+    /// An `<i2c_component>` that cannot be built.
+    COMPONENT_INVALID_I2C = "E0603";
+    /// An `<spi_component>` that cannot be built.
+    COMPONENT_INVALID_SPI = "E0604";
+    /// A `<uart_component>` that cannot be built.
+    COMPONENT_INVALID_UART = "E0605";
     /// A component tag no element implements.
     COMPONENT_UNSUPPORTED = "E0606";
+    /// An `<spi_component cs>` naming a gpio that does not exist.
+    COMPONENT_INVALID_CS = "E0607";
     /// An `<led>` referencing a gpio id that does not exist.
     COMPONENT_UNKNOWN_GPIO = "E0608";
     /// A led on an input pin.
     COMPONENT_WRONG_DIRECTION = "E0609";
+    /// A `<uart_component baud_rate="0">`.
+    COMPONENT_INVALID_BAUD = "E0610";
+    /// A second `<i2c_component>` on one `<i2c>` bus.
+    COMPONENT_I2C_BUS_USED = "E0611";
+    /// A second `<uart_component>` on one `<uart>` port.
+    COMPONENT_UART_USED = "E0612";
+    /// A bus component referring to a bus that does not exist.
+    COMPONENT_UNKNOWN_BUS = "E0613";
+    /// A bus component id that cannot become a Rust identifier.
+    COMPONENT_INVALID_ID = "E0614";
     /// A recipe component that cannot be built (the recipe's default code).
     /// Legacy component codes stop at `E0614`; this one is free.
     COMPONENT_INVALID = "E0615";
 
+    /// Two elements of different kinds on one pin.
+    CONFLICT_PIN = "E0701";
     /// A pin claimed by two elements of the same kind.
     CONFLICT_PIN_USED = "E0702";
     /// One element needs an input and the other an output.
     CONFLICT_DIRECTION = "E0703";
+    /// Two elements naming the same hardware peripheral (`UART1`).
+    CONFLICT_PERIPHERAL = "E0704";
+    /// An `<i2c>` that puts sda and scl on one pin.
+    CONFLICT_I2C_WIRING = "E0705";
+    /// An `<spi>` that puts two of its pins on one GPIO.
+    CONFLICT_SPI_WIRING = "E0706";
+    /// A `<uart>` that puts tx and rx on one pin.
+    CONFLICT_UART_WIRING = "E0707";
 }
 
 #[cfg(test)]
@@ -142,7 +190,14 @@ mod tests {
             assert!(
                 matches!(
                     n,
-                    101..=104 | 201..=209 | 301 | 302 | 306..=315 | 501..=503 | 601 | 602 | 606 | 608 | 609 | 615 | 702 | 703
+                    101..=104
+                        | 201..=209
+                        | 301
+                        | 302
+                        | 306..=315
+                        | 501..=513
+                        | 601..=615
+                        | 701..=707
                 ),
                 "{} is outside the codes this slice defines",
                 code.as_str()

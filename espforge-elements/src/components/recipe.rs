@@ -23,9 +23,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::attrs::{self, Issue};
-use crate::element::{
-    Element, EmitCx, LowerCx, Lowered, Reported, conflict_diagnostic, is_rust_ident,
-};
+use crate::element::{Element, EmitCx, LowerCx, Lowered, Reported, is_rust_ident};
 use crate::model::{Board, ClaimedPin, Component, Direction, Ident, Owner, OwnerKind, Pin, PinUse};
 
 /// The interpreter for one schema element that declares a `recipe`.
@@ -131,10 +129,7 @@ impl Element for RecipeElement {
                 node_span(node),
                 pin_use,
             )
-            .map_err(|conflict| {
-                let (code, message, label) = conflict_diagnostic(&conflict);
-                cx.report(code, conflict.incoming.span.clone(), message, label)
-            })?;
+            .map_err(|conflict| cx.report_conflict(&conflict))?;
 
         // 7. every remaining `bool` attribute, in schema order.
         let mut flags = Vec::new();

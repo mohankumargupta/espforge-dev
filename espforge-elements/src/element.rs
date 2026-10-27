@@ -16,8 +16,8 @@ use espforge_diagnostics::{DiagCode, Diagnostic};
 use proc_macro2::TokenStream;
 
 use crate::model::{
-    Board, ClaimedPin, Component, Conflict, ConflictKind, GpioDecl, Ident, Meta, Owner, Pin,
-    PinUse, ResourceGraph,
+    Board, Bus, BusId, ClaimedPin, Component, Conflict, ConflictKind, GpioDecl, Ident, Meta, Owner,
+    PeripheralClash, Pin, PinUse, ResourceGraph,
 };
 
 /// One element tag: reads its node and lowers it onto the board.
@@ -61,6 +61,9 @@ pub struct LowerCx {
     gpios: Vec<GpioDecl>,
     resources: ResourceGraph,
     components: Vec<Component>,
+    /// `<gpio>` ids named by an `<spi_component cs>` reference: a chip select
+    /// that names its own declaration is not a second user of that pin.
+    cs_gpios: Vec<String>,
 }
 
 impl Default for LowerCx {
@@ -76,6 +79,7 @@ impl LowerCx {
             gpios: Vec::new(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            cs_gpios: Vec::new(),
         }
     }
 
@@ -102,6 +106,61 @@ impl LowerCx {
         self.gpios.push(decl);
     }
 
+    /// Every lowered `<gpio>`, in source order.
+    pub fn gpios(&self) -> &[GpioDecl] {
+        &self.gpios
+    }
+
+    /// Append a bus and return its id.
+    pub fn add_bus(&mut self, bus: Bus) -> BusId {
+        self.resources.add_bus(bus)
+    }
+
+    pub fn bus(&self, id: BusId) -> Option<&Bus> {
+        self.resources.bus(id)
+    }
+
+    pub fn bus_mut(&mut self, id: BusId) -> Option<&mut Bus> {
+        self.resources.bus_mut(id)
+    }
+
+    pub fn bus_by_name(&self, name: &str) -> Option<BusId> {
+        self.resources.bus_by_name(name)
+    }
+
+    pub fn buses(&self) -> &[Bus] {
+        self.resources.buses()
+    }
+
+    /// Claim a physical peripheral name (`UART1`).
+    pub fn claim_peripheral(
+        &mut self,
+        peripheral: impl Into<String>,
+        owner: Owner,
+        span: Range<usize>,
+    ) -> Result<(), PeripheralClash> {
+        self.resources.claim_peripheral(peripheral, owner, span)
+    }
+
+    /// Remember that an `<spi_component>` chip select names this `<gpio>`.
+    pub fn record_cs_gpio(&mut self, id: String) {
+        self.cs_gpios.push(id);
+    }
+
+    pub fn cs_gpios(&self) -> &[String] {
+        &self.cs_gpios
+    }
+
+    /// Every lowered component, in source order.
+    pub fn components(&self) -> &[Component] {
+        &self.components
+    }
+
+    /// Whether anything has been reported so far.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
     /// Claim `pin` for `owner`. A failure carries both sides of the conflict
     /// so the element can keep its own wording.
     pub fn claim_pin(
@@ -112,6 +171,12 @@ impl LowerCx {
         need: PinUse,
     ) -> Result<ClaimedPin, Conflict> {
         self.resources.claim(pin, owner, span, need)
+    }
+
+    /// Report a refused pin claim in the corpus wording.
+    pub fn report_conflict(&mut self, conflict: &Conflict) -> Reported {
+        let report = conflict_diagnostic(conflict);
+        self.report(report.code, report.span, report.message, report.label)
     }
 
     /// Record a lowered component.
@@ -148,15 +213,19 @@ impl LowerCx {
 pub struct EmitCx {
     fields: Vec<TokenStream>,
     inits: Vec<TokenStream>,
-    safety: Vec<(String, String)>,
+    prelude: Vec<TokenStream>,
+    once: std::collections::BTreeSet<String>,
+    safety: Vec<(String, Vec<String>)>,
 }
 
 /// What an [`EmitCx`] collected, in board order.
 pub struct EmitParts {
     pub fields: Vec<TokenStream>,
     pub inits: Vec<TokenStream>,
-    /// `(anchor, line)` pairs for the emit crate to turn into comment blocks.
-    pub safety: Vec<(String, String)>,
+    /// Statements printed before `Self { .. }`, in first-use order.
+    pub prelude: Vec<TokenStream>,
+    /// `(anchor, lines)` pairs for the emit crate to turn into comment blocks.
+    pub safety: Vec<(String, Vec<String>)>,
 }
 
 impl EmitCx {
@@ -174,41 +243,200 @@ impl EmitCx {
         self.inits.push(init);
     }
 
+    /// A statement that must appear before `Self { .. }`, emitted at most once
+    /// per key, in first-use order.
+    ///
+    /// The SPI prelude is the caller: two devices on one bus must not build
+    /// the bus twice, and a bus with no device must not be built at all.
+    pub fn once(&mut self, key: &str, statement: TokenStream) {
+        if self.once.insert(key.to_string()) {
+            self.prelude.push(statement);
+        }
+    }
+
     /// A `// SAFETY: ...` line to place before `anchor` in the printed file.
     pub fn safety_comment(&mut self, anchor: impl Into<String>, line: impl Into<String>) {
-        self.safety.push((anchor.into(), line.into()));
+        self.safety.push((anchor.into(), vec![line.into()]));
+    }
+
+    /// Several comment lines, kept in order, before `anchor`.
+    pub fn safety_block(&mut self, anchor: impl Into<String>, lines: &[&str]) {
+        self.safety.push((
+            anchor.into(),
+            lines.iter().map(|line| (*line).to_string()).collect(),
+        ));
     }
 
     pub fn into_parts(self) -> EmitParts {
         EmitParts {
             fields: self.fields,
             inits: self.inits,
+            prelude: self.prelude,
             safety: self.safety,
         }
     }
 }
 
+/// A refused claim in the wording the diagnostics corpus pins: the code, the
+/// title, the label and which span is underlined.
+pub struct ConflictReport {
+    pub code: DiagCode,
+    pub message: &'static str,
+    pub label: String,
+    pub span: Range<usize>,
+}
+
 /// The legacy wording for a refused claim, kept with the graph so every
 /// element reports conflicts the same way.
 ///
-/// A direction clash is its own code and title (`E0703`, "pin direction
-/// clash"): the first one reachable is `<led>` against `<button>`, which the
-/// legacy diagnostics corpus pins.
-pub fn conflict_diagnostic(conflict: &Conflict) -> (DiagCode, &'static str, String) {
+/// The blame order and primary span follow the legacy `conflicts.rs` loops for
+/// the cases the corpus pins. The corpus fixes each word: never rewrite one of
+/// these labels without re-running it.
+pub fn conflict_diagnostic(conflict: &Conflict) -> ConflictReport {
     let pin = conflict.pin.0;
-    let existing = display(&conflict.existing.owner, true);
-    let incoming = display(&conflict.incoming.owner, false);
+    let existing = &conflict.existing;
+    let incoming = &conflict.incoming;
+
     match conflict.kind {
-        ConflictKind::Direction => (
-            espforge_diagnostics::codes::CONFLICT_DIRECTION,
-            "pin direction clash",
-            format!("{existing} and {incoming}: one pin cannot be both input and output"),
-        ),
-        ConflictKind::Pin | ConflictKind::SelfClash => (
+        ConflictKind::Direction => ConflictReport {
+            code: espforge_diagnostics::codes::CONFLICT_DIRECTION,
+            message: "pin direction clash",
+            label: format!(
+                "{} and {}: one pin cannot be both input and output",
+                display(&existing.owner, true),
+                display(&incoming.owner, false)
+            ),
+            span: incoming.span.clone(),
+        },
+        ConflictKind::SelfClash => match existing.owner.kind {
+            crate::model::OwnerKind::I2c => ConflictReport {
+                code: espforge_diagnostics::codes::CONFLICT_I2C_WIRING,
+                message: "i2c wiring",
+                label: format!(
+                    "{} sda and scl cannot both be GPIO{pin}",
+                    display(&existing.owner, false)
+                ),
+                span: incoming.span.clone(),
+            },
+            crate::model::OwnerKind::Spi => ConflictReport {
+                code: espforge_diagnostics::codes::CONFLICT_SPI_WIRING,
+                message: "spi wiring",
+                label: format!(
+                    "{} sclk and mosi cannot both be GPIO{pin}",
+                    display(&existing.owner, false)
+                ),
+                span: incoming.span.clone(),
+            },
+            crate::model::OwnerKind::Uart => ConflictReport {
+                code: espforge_diagnostics::codes::CONFLICT_UART_WIRING,
+                message: "uart wiring",
+                label: format!(
+                    "{} tx and rx cannot both be GPIO{pin}",
+                    display(&existing.owner, false)
+                ),
+                span: incoming.span.clone(),
+            },
+            _ => ConflictReport {
+                code: espforge_diagnostics::codes::CONFLICT_PIN_USED,
+                message: "pin already used",
+                label: format!("{} claims GPIO{pin} twice", display(&existing.owner, false)),
+                span: incoming.span.clone(),
+            },
+        },
+        ConflictKind::Pin => pin_conflict(conflict),
+    }
+}
+
+fn pin_conflict(conflict: &Conflict) -> ConflictReport {
+    use crate::model::OwnerKind::*;
+
+    let pin = conflict.pin.0;
+    let existing = &conflict.existing;
+    let incoming = &conflict.incoming;
+    let (code, message, label, span) = match (&existing.owner.kind, &incoming.owner.kind) {
+        (Recipe(a), Recipe(b)) if a == b => (
             espforge_diagnostics::codes::CONFLICT_PIN_USED,
             "pin already used",
-            format!("{existing} and {incoming} both use GPIO{pin}"),
+            format!(
+                "{} and {} both use GPIO{pin}",
+                display(&existing.owner, true),
+                display(&incoming.owner, false)
+            ),
+            incoming.span.clone(),
         ),
+        (SpiComponent, SpiComponent) => (
+            espforge_diagnostics::codes::CONFLICT_PIN_USED,
+            "cs pin already used",
+            format!(
+                "{} and {} both use GPIO{pin}",
+                display(&existing.owner, true),
+                display(&incoming.owner, true)
+            ),
+            incoming.span.clone(),
+        ),
+        (Spi, SpiComponent) => (
+            espforge_diagnostics::codes::CONFLICT_PIN,
+            "pin conflict",
+            format!(
+                "{}'s cs and {} both use GPIO{pin}",
+                display(&incoming.owner, false),
+                display(&existing.owner, false)
+            ),
+            incoming.span.clone(),
+        ),
+        (I2c, Uart) | (Uart, I2c) => {
+            let (i2c, uart) = if existing.owner.kind == I2c {
+                (existing, incoming)
+            } else {
+                (incoming, existing)
+            };
+            (
+                espforge_diagnostics::codes::CONFLICT_PIN,
+                "pin conflict",
+                format!(
+                    "{} and {} both use GPIO{pin}",
+                    display(&i2c.owner, false),
+                    display(&uart.owner, false)
+                ),
+                i2c.span.clone(),
+            )
+        }
+        (_, Recipe(_)) => (
+            espforge_diagnostics::codes::CONFLICT_PIN,
+            "pin conflict",
+            format!(
+                "{} and {} both use GPIO{pin}",
+                display(&incoming.owner, true),
+                display(&existing.owner, false)
+            ),
+            incoming.span.clone(),
+        ),
+        (Recipe(_), _) => (
+            espforge_diagnostics::codes::CONFLICT_PIN,
+            "pin conflict",
+            format!(
+                "{} and {} both use GPIO{pin}",
+                display(&existing.owner, true),
+                display(&incoming.owner, false)
+            ),
+            existing.span.clone(),
+        ),
+        _ => (
+            espforge_diagnostics::codes::CONFLICT_PIN,
+            "pin conflict",
+            format!(
+                "{} and {} both use GPIO{pin}",
+                display(&existing.owner, false),
+                display(&incoming.owner, false)
+            ),
+            existing.span.clone(),
+        ),
+    };
+    ConflictReport {
+        code,
+        message,
+        label,
+        span,
     }
 }
 

@@ -33,6 +33,7 @@ impl Element for Gpio {
                 SchemaDirection::Output => Direction::Output,
                 SchemaDirection::Input => Direction::Input,
             }),
+            span: node_span(node),
         });
         Ok(())
     }
