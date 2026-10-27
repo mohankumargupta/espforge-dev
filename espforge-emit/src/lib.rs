@@ -180,6 +180,8 @@ mod tests {
             meta: meta.clone(),
             resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 

@@ -125,7 +125,10 @@ mod tests {
         for element in &schema.elements {
             // Only sections that lower have elements; `# espforge` is read by
             // the core reader, not by the registry.
-            if !matches!(element.section.as_str(), "peripherals" | "components") {
+            if !matches!(
+                element.section.as_str(),
+                "peripherals" | "components" | "services"
+            ) {
                 continue;
             }
             if let Some(problem) = implementation_problem(element, &hand_written) {
@@ -272,10 +275,10 @@ mod tests {
             assert!(
                 matches!(
                     schema_element.section.as_str(),
-                    "peripherals" | "components"
+                    "peripherals" | "components" | "services"
                 ),
                 "`<{tag}>` is registered from a `<{}>` schema element, but only \
-                 peripherals and components lower",
+                 peripherals, components and services lower",
                 schema_element.section
             );
         }

@@ -10,6 +10,8 @@
 //! scheduler is running, an `esp-alloc` heap exists, and the `WIFI` peripheral
 //! is moved in by value.
 
+use core::cell::RefCell;
+
 use embassy_executor::Spawner;
 use embassy_net::{Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer};
@@ -97,6 +99,54 @@ impl Wifi {
     pub async fn wait_connected(&self) {
         self.stack.wait_link_up().await;
         self.stack.wait_config_up().await;
+    }
+}
+
+/// A `<wifi_station>` component: the station's credentials, and once started,
+/// the running connection handle.
+///
+/// It constructs in `Components::new` — no peripheral, no `unsafe` — and
+/// *starts* from `main` after `esp_rtos::start`, because the radio needs the
+/// scheduler and the heap. `start` therefore takes `&self` and parks the handle
+/// behind a `RefCell`, and `Components` never needs to be `mut`.
+pub struct WifiStation {
+    config: WifiConfig,
+    handle: RefCell<Option<Wifi>>,
+}
+
+impl WifiStation {
+    pub fn new(config: WifiConfig) -> Self {
+        Self {
+            config,
+            handle: RefCell::new(None),
+        }
+    }
+
+    /// Bring the radio up and spawn the association and network tasks. Returns
+    /// right away; use [`WifiStation::wait_connected`] to wait for an address.
+    pub fn start(&self, wifi: WIFI<'static>, spawner: &Spawner) -> Result<(), WifiError> {
+        let handle = Wifi::start(spawner, wifi, self.config)?;
+        *self.handle.borrow_mut() = Some(handle);
+        Ok(())
+    }
+
+    /// The running handle. Panics if the station has not been started — the
+    /// generated `main` always starts it before building the services.
+    fn handle(&self) -> Wifi {
+        match &*self.handle.borrow() {
+            Some(handle) => *handle,
+            None => panic!("wifi station not started"),
+        }
+    }
+
+    /// The embassy-net stack, for network services (HTTP, HTTPS).
+    pub fn stack(&self) -> Stack<'static> {
+        self.handle().stack()
+    }
+
+    /// Wait until the link is up and DHCP has assigned an address.
+    pub async fn wait_connected(&self) {
+        self.handle().wait_connected().await;
     }
 }
 

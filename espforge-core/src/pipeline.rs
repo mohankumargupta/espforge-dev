@@ -104,7 +104,19 @@ pub fn validate<'a>(src: &'a str, overrides: &Overrides) -> Result<Checked<'a>, 
         meta.clone(),
         &parsed.sections["peripherals"],
         &parsed.sections["components"],
+        &parsed.sections["services"],
     )?;
+
+    // 6. Warnings ride on the board; surface them through the notes the CLI
+    // already prints, so a warning never needs its own channel.
+    for warning in &board.warnings {
+        notes.push(format!(
+            "⚠️  {}: {} [{}]",
+            warning.severity.as_str(),
+            warning.message,
+            warning.code.as_str()
+        ));
+    }
 
     Ok(Checked {
         parsed,

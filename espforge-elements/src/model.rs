@@ -10,6 +10,7 @@
 //! the elements that share them, and the bus kinds join [`OwnerKind`] with
 //! their buses. Recipe components share the one [`OwnerKind::Recipe`] variant.
 
+use espforge_diagnostics::Diagnostic;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -135,6 +136,8 @@ pub enum OwnerKind {
     I2cComponent,
     SpiComponent,
     UartComponent,
+    /// The on-chip Wi-Fi radio (`<wifi>`), which claims the `WIFI` block.
+    Wifi,
 }
 
 impl OwnerKind {
@@ -149,6 +152,7 @@ impl OwnerKind {
             OwnerKind::I2cComponent => "i2c_component",
             OwnerKind::SpiComponent => "spi_component",
             OwnerKind::UartComponent => "uart_component",
+            OwnerKind::Wifi => "wifi",
         }
     }
 }
@@ -501,15 +505,76 @@ component_enum! {
     I2c(crate::components::i2c::I2cComponent),
     Spi(crate::components::spi::SpiComponent),
     Uart(crate::components::uart::UartComponent),
+    WifiStation(crate::components::wifi_station::WifiStationComponent),
 }
 
-/// Everything the emitters need: the project settings, the resources it owns
-/// and the components on them.
+/// One line per service variant generates [`Service::id`] and the
+/// [`Lowered`](crate::Lowered) forwarding, so a new service is its own file
+/// plus its own line here — the same shape as `component_enum!`.
+macro_rules! service_enum {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        /// A service in the board: software that rides on an interface, not a
+        /// pin. Lowered after the components, so it can refer to one.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum Service {
+            $($variant($ty)),*
+        }
+
+        impl Service {
+            /// The service's id.
+            pub fn id(&self) -> &Ident {
+                match self {
+                    $(Service::$variant(s) => crate::element::Lowered::id(s),)*
+                }
+            }
+        }
+
+        impl crate::element::Lowered for Service {
+            fn id(&self) -> &Ident {
+                self.id()
+            }
+
+            fn emit(&self, board: &Board, cx: &mut crate::element::EmitCx) {
+                match self {
+                    $(Service::$variant(s) => s.emit(board, cx),)*
+                }
+            }
+        }
+    };
+}
+
+service_enum! {
+    HttpClient(crate::services::http_client::HttpClientService),
+    HttpsClient(crate::services::https_client::HttpsClientService),
+}
+
+/// Everything the emitters need: the project settings, the resources it owns,
+/// the components on them and the services over them.
 #[derive(Debug, Clone)]
 pub struct Board {
     pub meta: Meta,
     pub resources: ResourceGraph,
     pub components: Vec<Component>,
+    pub services: Vec<Service>,
+    /// Warnings collected while lowering. Warnings never stop the build, so
+    /// they ride on the board rather than in the error list.
+    pub warnings: Vec<Diagnostic>,
+}
+
+impl Board {
+    /// Whether any plain-HTTP client service is declared.
+    pub fn uses_http(&self) -> bool {
+        self.services
+            .iter()
+            .any(|service| matches!(service, Service::HttpClient(_)))
+    }
+
+    /// Whether any TLS (HTTPS) client service is declared.
+    pub fn uses_https(&self) -> bool {
+        self.services
+            .iter()
+            .any(|service| matches!(service, Service::HttpsClient(_)))
+    }
 }
 
 #[cfg(test)]
@@ -675,6 +740,8 @@ mod tests {
             meta: meta("blink"),
             resources,
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         };
 
         assert!(board.components.is_empty());

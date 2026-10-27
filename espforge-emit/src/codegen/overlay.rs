@@ -102,7 +102,7 @@ mod tests {
     use super::*;
     use espforge_elements::components::recipe::RecipeComponent;
     use espforge_elements::{
-        Component, Console, Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime,
+        Component, Console, Ident, Meta, Owner, OwnerKind, Pin, PinUse, Runtime,
     };
 
     fn board() -> Board {
@@ -116,6 +116,8 @@ mod tests {
             },
             resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 

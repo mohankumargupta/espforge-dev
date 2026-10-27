@@ -201,6 +201,24 @@ mod hw {
 #[cfg(any(target_arch = "riscv32", target_arch = "xtensa"))]
 pub use hw::*;
 
+/// The TLS client allocates its record buffers from the heap (the radio
+/// already installed one: `wifi` requires the `alloc` option).
+#[cfg(feature = "https-client")]
+extern crate alloc;
+
+/// Network services: the outgoing HTTP/HTTPS clients. Gated on the target like
+/// `hw`, and on the `http-client` feature so a project with no service never
+/// pulls in `edge-http` or `embedded-tls`.
+///
+/// Also built under `test`, so the URL-splitting and framing helpers have host
+/// unit tests.
+#[cfg(any(target_arch = "riscv32", target_arch = "xtensa", test))]
+#[cfg(feature = "http-client")]
+mod services;
+#[cfg(any(target_arch = "riscv32", target_arch = "xtensa", test))]
+#[cfg(feature = "http-client")]
+pub use services::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;

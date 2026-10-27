@@ -12,7 +12,8 @@
 //! `Services {}` of the helloworld golden.
 
 use anyhow::{Context, Result};
-use espforge_elements::{Board, EmitCx, Lowered, Meta, ResolvedOptions, Runtime};
+use espforge_elements::element::EmitParts;
+use espforge_elements::{Board, EmitCx, Lowered, MainCtx, Meta, ResolvedOptions, Runtime};
 use proc_macro2::TokenStream;
 use quote::format_ident;
 
@@ -20,7 +21,12 @@ use super::comments::{self, Comment};
 use crate::artifact::{Artifact, Ownership};
 
 /// Every Rust artifact, in a deterministic order.
+///
+/// The elements are asked to emit **once**, here: the same `EmitParts` feed
+/// `generated.rs` (fields, initialisers, prelude, safety notes) and `main.rs`
+/// (startup statements). A component cannot be asked to emit twice.
 pub fn generate(board: &Board, meta: &Meta, opts: &ResolvedOptions) -> Result<Vec<Artifact>> {
+    let parts = collect(board);
     Ok(vec![
         Artifact {
             path: "build.rs".into(),
@@ -29,12 +35,12 @@ pub fn generate(board: &Board, meta: &Meta, opts: &ResolvedOptions) -> Result<Ve
         },
         Artifact {
             path: "src/bin/main.rs".into(),
-            content: main(board, meta, opts)?,
+            content: main(board, &parts, meta, opts)?,
             ownership: Ownership::Owned,
         },
         Artifact {
             path: "src/generated.rs".into(),
-            content: generated(board, meta)?,
+            content: generated(&parts, meta)?,
             ownership: Ownership::Owned,
         },
         Artifact {
@@ -50,11 +56,38 @@ fn print(tokens: TokenStream) -> Result<String> {
     Ok(prettyplease::unparse(&file))
 }
 
-fn generated(board: &Board, _meta: &Meta) -> Result<String> {
-    let parts = collect_components(board);
-    let fields = parts.fields;
-    let inits = parts.inits;
-    let prelude = parts.prelude;
+fn generated(parts: &EmitParts, _meta: &Meta) -> Result<String> {
+    let fields = &parts.fields;
+    let inits = &parts.inits;
+    let prelude = &parts.prelude;
+    let service_fields = &parts.service_fields;
+    let service_inits = &parts.service_inits;
+
+    // `Services` is byte-identical to the styles that predate services (the
+    // helloworld `Services {}` with no `new`) when nothing is declared, so
+    // adding a service is a change to projects that have one, and no change to
+    // the projects that do not.
+    let services = if service_fields.is_empty() {
+        quote::quote! {
+            #[doc = " Constructed services."]
+            pub struct Services {}
+        }
+    } else {
+        quote::quote! {
+            #[doc = " Constructed services."]
+            pub struct Services {
+                #(#service_fields)*
+            }
+
+            impl Services {
+                pub fn new(components: &Components) -> Self {
+                    Self {
+                        #(#service_inits)*
+                    }
+                }
+            }
+        }
+    };
 
     let tokens = quote::quote! {
         #![allow(dead_code, unused_variables)]
@@ -87,8 +120,7 @@ fn generated(board: &Board, _meta: &Meta) -> Result<String> {
         #[doc = " Constructed devices (none yet)."]
         pub struct Devices {}
 
-        #[doc = " Constructed services."]
-        pub struct Services {}
+        #services
     };
 
     let mut text = comments::prepend(
@@ -101,13 +133,20 @@ fn generated(board: &Board, _meta: &Meta) -> Result<String> {
     Ok(text)
 }
 
-/// Fill the `Components` fields and initialisers by asking every component to
-/// emit itself. There is no `match` on `Component` here: an element's own
-/// file owns every token it prints.
-fn collect_components(board: &Board) -> espforge_elements::element::EmitParts {
-    let mut cx = EmitCx::new();
+/// Fill the `Components` and `Services` fields and initialisers, and collect
+/// the `main()` startup statements, by asking every component and service to
+/// emit itself. There is no `match` on `Component` here: an element's own file
+/// owns every token it prints.
+///
+/// Components emit before services, so a service's `components.<network>`
+/// reference is to a field declared above it.
+fn collect(board: &Board) -> EmitParts {
+    let mut cx = EmitCx::with_main(MainCtx::default());
     for component in &board.components {
         component.emit(board, &mut cx);
+    }
+    for service in &board.services {
+        service.emit(board, &mut cx);
     }
     cx.into_parts()
 }
@@ -210,26 +249,36 @@ fn lib(meta: &Meta) -> Result<String> {
     Ok(text)
 }
 
-/// Whether `main()` must install a heap allocator.
+/// The heap line `main()` must install, if any.
 ///
 /// The radio is the only thing that asks for one: `esp-radio` allocates, and
-/// without a heap the WiFi tasks fail to start. Legacy gated the same emitter
-/// on `<wifi>`/`<ble-trouble>`.
-fn needs_heap(opts: &ResolvedOptions) -> bool {
-    opts.is_on("wifi")
-}
-
-fn main(_board: &Board, meta: &Meta, opts: &ResolvedOptions) -> Result<String> {
-    let crate_name = format_ident!("{}", meta.crate_name());
-
-    // 72 KiB is what the legacy `wifi_station` golden allocated for the radio
-    // stack. The literal is written out so the number reaches the file
-    // unsuffixed, and the empty stream is inert in the blocking `main` (which
-    // cannot have a radio anyway: `wifi` requires `embassy`).
-    let heap = if needs_heap(opts) {
+/// without a heap the WiFi tasks fail to start. A TLS client adds
+/// `embedded-tls`'s crypto scratch, so it needs a larger one. The literal is
+/// written out so the number reaches the file unsuffixed, and the caller leaves
+/// it out entirely when there is no radio (a blocking project cannot have one:
+/// `wifi` requires `embassy`).
+fn heap_line(board: &Board, opts: &ResolvedOptions) -> TokenStream {
+    if board.uses_https() {
+        quote::quote! { esp_alloc::heap_allocator!(size: 96 * 1024); }
+    } else if opts.is_on("wifi") {
         quote::quote! { esp_alloc::heap_allocator!(size: 72 * 1024); }
     } else {
         quote::quote! {}
+    }
+}
+
+fn main(board: &Board, parts: &EmitParts, meta: &Meta, opts: &ResolvedOptions) -> Result<String> {
+    let crate_name = format_ident!("{}", meta.crate_name());
+    let heap = heap_line(board, opts);
+    let startup = &parts.startup;
+
+    // `Services {}` without a `new` when nothing is declared keeps the
+    // helloworld golden byte-identical; a declared service gets the
+    // `Services::new(&components)` constructor instead.
+    let services = if parts.service_fields.is_empty() {
+        quote::quote! { let services = Services {}; }
+    } else {
+        quote::quote! { let services = Services::new(&components); }
     };
 
     let tokens = match meta.runtime {
@@ -255,7 +304,7 @@ fn main(_board: &Board, meta: &Meta, opts: &ResolvedOptions) -> Result<String> {
 
                 let components = Components::new(&mut registry);
                 let devices = Devices {};
-                let services = Services {};
+                #services
 
                 let ctx = Context { logger, delay, components, devices, services };
                 let ctx = CTX.init(ctx);
@@ -291,10 +340,12 @@ fn main(_board: &Board, meta: &Meta, opts: &ResolvedOptions) -> Result<String> {
                 let timg0 = TimerGroup::new(registry.peripherals.TIMG0);
                 esp_rtos::start(timg0.timer0, registry.peripherals.FROM_CPU_INTR0);
 
+                #(#startup)*
+
                 let logger = espforge_runtime::Logger::new();
                 let delay = espforge_runtime::Delay::new();
 
-                let services = Services {};
+                #services
 
                 let ctx = Context { logger, delay, components, devices, services };
                 let ctx = CTX.init(ctx);
@@ -511,6 +562,8 @@ mod tests {
             meta: case.meta.clone(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         };
         let id = Ident::new("red_led", 0..0);
         let pin = board
@@ -536,7 +589,7 @@ mod tests {
     #[test]
     fn a_led_emits_its_field_init_and_safety_note() {
         let (board, meta) = blink();
-        let text = generated(&board, &meta).unwrap();
+        let text = generated(&collect(&board), &meta).unwrap();
         assert!(
             text.contains("pub red_led: espforge_runtime::Led,"),
             "{text}"
@@ -559,9 +612,13 @@ mod tests {
             meta: case.meta.clone(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         };
-        let text = generated(&board, &case.meta).unwrap();
+        let text = generated(&collect(&board), &case.meta).unwrap();
         assert!(text.contains("pub struct Components {}"), "{text}");
+        assert!(text.contains("pub struct Services {}"), "{text}");
+        assert!(!text.contains("Services::new"), "{text}");
         assert!(!text.contains("SAFETY"), "{text}");
     }
 
@@ -570,6 +627,8 @@ mod tests {
             meta: case.meta.clone(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -580,7 +639,8 @@ mod tests {
     #[test]
     fn wifi_installs_the_heap_the_radio_needs() {
         let case = case("esp32c3", Runtime::Embassy, true, &[], &["wifi"]);
-        let text = main(&empty_board(&case), &case.meta, &case.opts).unwrap();
+        let board = empty_board(&case);
+        let text = main(&board, &collect(&board), &case.meta, &case.opts).unwrap();
         assert!(
             text.contains("esp_alloc::heap_allocator!(size : 72 * 1024);"),
             "{text}"
@@ -594,7 +654,31 @@ mod tests {
     #[test]
     fn a_project_without_a_radio_allocates_nothing() {
         let case = case("esp32c3", Runtime::Embassy, true, &[], &[]);
-        let text = main(&empty_board(&case), &case.meta, &case.opts).unwrap();
+        let board = empty_board(&case);
+        let text = main(&board, &collect(&board), &case.meta, &case.opts).unwrap();
         assert!(!text.contains("heap_allocator"), "{text}");
+    }
+
+    /// A TLS client needs a bigger heap than the radio alone: `embedded-tls`
+    /// keeps crypto scratch and record buffers.
+    #[test]
+    fn an_https_client_bumps_the_heap() {
+        let case = case("esp32c3", Runtime::Embassy, true, &[], &["wifi"]);
+        let mut board = empty_board(&case);
+        board.services.push(espforge_elements::Service::HttpsClient(
+            espforge_elements::services::https_client::HttpsClientService {
+                id: Ident::new("secure", 0..0),
+                network: Ident::new("home", 0..0),
+                rx_buffer_size: 4096,
+                tx_buffer_size: 2048,
+                timeout_ms: 15000,
+                insecure: false,
+            },
+        ));
+        let text = main(&board, &collect(&board), &case.meta, &case.opts).unwrap();
+        assert!(
+            text.contains("esp_alloc::heap_allocator!(size : 96 * 1024);"),
+            "{text}"
+        );
     }
 }

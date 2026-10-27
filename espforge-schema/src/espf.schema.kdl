@@ -159,6 +159,14 @@ element "uart" section="peripherals" {
     see_also "components/uart_component"
 }
 
+element "wifi" section="peripherals" {
+    summary "The on-chip Wi-Fi radio"
+    description "Claims the WIFI hardware block. One per chip, and only on a chip that has one."
+    attr "id" kind="ident" required=#true
+    example "minimal" #"<wifi id="radio" />"#
+    see_also "components/wifi_station"
+}
+
 // --------------------------------------------------------------- components
 
 section "components" {
@@ -238,6 +246,27 @@ element "uart_component" section="components" {
     see_also "peripherals/uart"
 }
 
+element "wifi_station" section="components" {
+    summary "Connect to an existing Wi-Fi network"
+    description "Associates with an access point and brings up DHCP over the referenced <wifi> radio. The network stack is what network services (HTTP, NTP) connect through."
+    attr "id" kind="ident" required=#true
+    attr "wifi" kind="ref" to="wifi" required=#true {
+        help "The <wifi> radio this station uses."
+    }
+    attr "ssid" kind="str" required=#true {
+        help "1 to 32 bytes."
+    }
+    attr "auth" kind="choice" default="wpa2" {
+        choices "open" "wpa2"
+    }
+    attr "password" kind="str" {
+        help "Literal, or env:NAME to read NAME at build time. Warns: the value is compiled into the firmware. Required unless auth=\"open\"."
+    }
+    example "home network" #"<wifi_station id="home" wifi="$radio" ssid="my-network" password="secret12" />"#
+    example "open network" #"<wifi_station id="home" wifi="$radio" ssid="my-network" auth="open" />"#
+    see_also "peripherals/wifi"
+}
+
 // ------------------------------------------------------------------ devices
 
 section "devices" {
@@ -248,8 +277,55 @@ section "devices" {
 // ----------------------------------------------------------------- services
 
 section "services" {
-    summary "Software services: wifi, ntp"
-    description "Services are software, not hardware: nothing in them refers to a peripheral."
+    summary "Software services: http_client, https_client"
+    description "Services are software, not hardware: they refer to components or devices, never peripherals."
+}
+
+element "http_client" section="services" {
+    summary "Async HTTP client over an established network interface"
+    description "Provides outgoing HTTP/1.1 requests (GET, POST, PUT, DELETE) using edge-http."
+    attr "id" kind="ident" required=#true
+    attr "network" kind="ref" to="wifi_station" required=#true {
+        help "The network component providing TCP/IP connectivity."
+    }
+    attr "rx_buffer_size" kind="u32" default="2048" {
+        help "Internal receive buffer size in bytes for headers and response body."
+    }
+    attr "tx_buffer_size" kind="u32" default="1024" {
+        help "Internal transmit buffer size in bytes for headers and request body."
+    }
+    attr "timeout_ms" kind="u32" default="10000" {
+        help "Socket connection and read/write timeout in milliseconds."
+    }
+    example "minimal" #"<http_client id="client" network="$home" />"#
+    example "custom buffers" #"<http_client id="client" network="$home" rx_buffer_size="4096" timeout_ms="5000" />"#
+    see_also "components/wifi_station"
+    see_also "services/https_client"
+}
+
+element "https_client" section="services" {
+    summary "Async TLS 1.3 encrypted HTTPS client over an established network interface"
+    description "Provides outgoing HTTPS requests with TLS 1.3 (embedded-tls)."
+    attr "id" kind="ident" required=#true
+    attr "network" kind="ref" to="wifi_station" required=#true {
+        help "The network component providing TCP/IP connectivity."
+    }
+    attr "rx_buffer_size" kind="u32" default="4096" {
+        help "Receive buffer size in bytes (TLS records require larger buffers; minimum 4096)."
+    }
+    attr "tx_buffer_size" kind="u32" default="2048" {
+        help "Transmit buffer size in bytes."
+    }
+    attr "timeout_ms" kind="u32" default="15000" {
+        help "Connection, TLS handshake and read/write timeout in milliseconds."
+    }
+    attr "insecure" kind="bool" default="false" {
+        help "When true, skips server X.509 certificate verification. Emits a build warning."
+    }
+    example "secure client" #"<https_client id="secure_client" network="$home" />"#
+    example "insecure for development" #"<https_client id="dev_client" network="$home" insecure="true" />"#
+    see_also "components/wifi_station"
+    see_also "services/http_client"
 }
 
 // ------------------------------------------------------------------- options

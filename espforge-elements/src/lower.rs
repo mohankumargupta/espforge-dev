@@ -13,17 +13,21 @@ use crate::element::{Element, LowerCx};
 use crate::model::{Board, Bus, Component, GpioDecl, Meta};
 use crate::registry;
 
-/// Lower both hardware sections onto `meta`.
+/// Lower the hardware sections onto `meta`, in rank order.
 ///
 /// Diagnostics are collected and returned together; a `Board` exists only when
 /// there are none. A bus pin on a declared `<gpio>` stops the walk before the
-/// components, in the legacy order the diagnostics corpus pins.
+/// components, in the legacy order the diagnostics corpus pins. Services come
+/// last: they refer down to components, so lowering them over a failed
+/// component pass would only report the same missing reference twice.
 pub fn lower(
     meta: Meta,
     peripherals: &[ParsedNode<'_>],
     components: &[ParsedNode<'_>],
+    services: &[ParsedNode<'_>],
 ) -> Result<Board, Vec<Diagnostic>> {
     let mut cx = LowerCx::new();
+    cx.set_meta(&meta);
     lower_section("peripherals", peripherals, &mut cx);
     check_bus_gpio_declarations(&mut cx);
     // Legacy stopped at the first bus/gpio conflict before a component could
@@ -36,6 +40,10 @@ pub fn lower(
     }
     lower_section("components", components, &mut cx);
     check_spi_cs_gpio_declarations(&mut cx);
+    if cx.has_errors() {
+        return cx.into_board(meta);
+    }
+    lower_section("services", services, &mut cx);
     cx.into_board(meta)
 }
 
@@ -137,6 +145,7 @@ fn lower_section(section: &str, nodes: &[ParsedNode<'_>], cx: &mut LowerCx) {
                 };
                 let code = match section {
                     "peripherals" => codes::PERIPHERAL_UNSUPPORTED,
+                    "services" => codes::SERVICE_UNSUPPORTED,
                     _ => codes::COMPONENT_UNSUPPORTED,
                 };
                 cx.report(
@@ -179,8 +188,9 @@ fn known_tags(section: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::element::Lowered;
-    use crate::model::{Component, Console, Direction, OwnerKind, Pin, PinUse, Runtime};
+    use crate::model::{Component, Console, Direction, OwnerKind, Pin, PinUse, Runtime, Service};
     use espf::parser::parse_espf;
+    use espforge_diagnostics::Severity;
 
     const BLINK: &str = "# espforge\n\
         \x20 <project name=\"blink\" />\n\
@@ -217,11 +227,16 @@ mod tests {
     }
 
     fn lower_src(src: &str) -> Result<Board, Vec<Diagnostic>> {
+        lower_src_with(src, meta())
+    }
+
+    fn lower_src_with(src: &str, meta: Meta) -> Result<Board, Vec<Diagnostic>> {
         let parsed = parse_espf(src);
         lower(
-            meta(),
+            meta,
             &parsed.sections["peripherals"],
             &parsed.sections["components"],
+            &parsed.sections["services"],
         )
     }
 
@@ -314,7 +329,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`, `<uart>`"
+            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`, `<uart>`, `<wifi>`"
         );
     }
 
@@ -343,7 +358,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::COMPONENT_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`, `<i2c_component>`, `<spi_component>`, `<uart_component>`"
+            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`, `<i2c_component>`, `<spi_component>`, `<uart_component>`, `<wifi_station>`"
         );
     }
 
@@ -490,7 +505,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`, `<uart>`"
+            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`, `<uart>`, `<wifi>`"
         );
     }
 
@@ -888,5 +903,264 @@ mod tests {
             cx.gpio("gpio18").unwrap().direction,
             Some(Direction::Output)
         );
+    }
+
+    /// A station on an esp32c3 radio: the base every service test replaces a
+    /// line of.
+    const WIFI_STATION: &str = "# espforge\n\
+        \x20 <project name=\"wifi\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"embassy\" />\n\
+        # peripherals\n\
+        \x20 <wifi id=\"radio\" />\n\
+        # components\n\
+        \x20 <wifi_station id=\"home\" wifi=\"$radio\" ssid=\"Wokwi-GUEST\" auth=\"open\" />\n\
+        # devices\n\
+        # services\n";
+
+    fn embassy_meta() -> Meta {
+        Meta {
+            runtime: Runtime::Embassy,
+            ..meta()
+        }
+    }
+
+    /// Put one service on [`WIFI_STATION`]'s `# services` line.
+    fn with_service(service: &str) -> String {
+        WIFI_STATION.replace("# services\n", &format!("# services\n  {service}\n"))
+    }
+
+    #[test]
+    fn a_station_lowers_under_its_radio() {
+        let board = lower_src_with(WIFI_STATION, embassy_meta()).expect("the station lowers");
+        let Component::WifiStation(station) = &board.components[0] else {
+            panic!("the component is a wifi station");
+        };
+        assert_eq!(station.id.raw, "home");
+        assert_eq!(station.radio.raw, "radio");
+        assert_eq!(station.ssid, "Wokwi-GUEST");
+        assert_eq!(
+            station.password,
+            crate::components::wifi_station::Password::Open
+        );
+    }
+
+    #[test]
+    fn a_station_must_name_a_radio_that_exists() {
+        let src = WIFI_STATION.replace("$radio", "$nope");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_UNKNOWN_WIFI);
+        assert_eq!(errors[0].message, "unknown wifi radio");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wifi_station id=\"home\"> refers to `nope`, which is not a <wifi> in `# peripherals`"
+        );
+    }
+
+    #[test]
+    fn one_radio_takes_exactly_one_station() {
+        let src = WIFI_STATION.replace(
+            "  <wifi_station id=\"home\" wifi=\"$radio\" ssid=\"Wokwi-GUEST\" auth=\"open\" />\n",
+            "  <wifi_station id=\"home\" wifi=\"$radio\" ssid=\"Wokwi-GUEST\" auth=\"open\" />\n\
+             \x20 <wifi_station id=\"other\" wifi=\"$radio\" ssid=\"Wokwi-GUEST\" auth=\"open\" />\n",
+        );
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_WIFI_RADIO_USED);
+        assert_eq!(errors[0].message, "wifi radio already used");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wifi_station id=\"home\"> and <wifi_station id=\"other\"> both use <wifi id=\"radio\">"
+        );
+    }
+
+    #[test]
+    fn a_station_without_a_wifi_attribute_names_the_missing_one() {
+        let src = WIFI_STATION.replace(" wifi=\"$radio\"", "");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_WIFI);
+        assert_eq!(errors[0].message, "invalid wifi_station");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wifi_station id=\"home\"> is missing `wifi`"
+        );
+    }
+
+    #[test]
+    fn an_ssid_must_be_one_to_32_bytes() {
+        let src = WIFI_STATION.replace("ssid=\"Wokwi-GUEST\"", "ssid=\"\"");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_SSID);
+        assert_eq!(errors[0].message, "invalid ssid");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wifi_station id=\"home\"> ssid must be 1 to 32 bytes, but \"\" is 0"
+        );
+    }
+
+    #[test]
+    fn a_wpa2_station_needs_a_password_of_8_to_63_characters() {
+        let src = WIFI_STATION.replace(" auth=\"open\"", "");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_PASSWORD);
+        assert_eq!(errors[0].message, "missing password");
+
+        let src = WIFI_STATION.replace("auth=\"open\"", "password=\"short\"");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_PASSWORD);
+        assert_eq!(errors[0].message, "invalid password");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wifi_station id=\"home\"> password must be 8 to 63 characters, but this one is 5"
+        );
+    }
+
+    #[test]
+    fn an_open_network_carries_no_password() {
+        let src = WIFI_STATION.replace("auth=\"open\"", "auth=\"open\" password=\"secret12\"");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_OPEN_WITH_PASSWORD);
+        assert_eq!(errors[0].message, "password given for an open network");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wifi_station id=\"home\"> auth=\"open\" cannot carry a password"
+        );
+    }
+
+    #[test]
+    fn an_env_password_names_a_variable_that_could_exist() {
+        let src = WIFI_STATION.replace("auth=\"open\"", "password=\"env:1bad\"");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_ENV);
+        assert_eq!(errors[0].message, "invalid environment variable name");
+
+        let src = WIFI_STATION.replace("auth=\"open\"", "password=\"env:WIFI_PASSWORD\"");
+        let board = lower_src_with(&src, embassy_meta()).expect("a good env name lowers");
+        let Component::WifiStation(station) = &board.components[0] else {
+            panic!("the component is a wifi station");
+        };
+        assert_eq!(
+            station.password,
+            crate::components::wifi_station::Password::Env("WIFI_PASSWORD".into())
+        );
+    }
+
+    #[test]
+    fn a_wifi_radio_only_lowers_on_a_chip_that_has_one() {
+        let h2 = Meta {
+            chip: "esp32h2".into(),
+            ..embassy_meta()
+        };
+        let errors = lower_src_with(WIFI_STATION, h2).unwrap_err();
+        assert_eq!(errors[0].code, codes::WIFI_NO_RADIO);
+        assert_eq!(errors[0].message, "no wifi radio");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wifi id=\"radio\">: esp32h2 has no Wi-Fi radio"
+        );
+    }
+
+    #[test]
+    fn an_http_client_lowers_over_the_stations_stack() {
+        let src = with_service("<http_client id=\"client\" network=\"$home\" />");
+        let board = lower_src_with(&src, embassy_meta()).expect("the client lowers");
+        let Service::HttpClient(client) = &board.services[0] else {
+            panic!("the service is an http client");
+        };
+        assert_eq!(client.id.raw, "client");
+        assert_eq!(client.network.raw, "home");
+        assert_eq!((client.rx_buffer_size, client.tx_buffer_size), (2048, 1024));
+        assert_eq!(client.timeout_ms, 10000);
+        assert!(board.warnings.is_empty(), "no warning without insecure");
+    }
+
+    #[test]
+    fn a_service_network_must_be_a_component_that_has_a_stack() {
+        let src = with_service("<http_client id=\"client\" network=\"$nope\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_UNKNOWN_NETWORK);
+        assert_eq!(errors[0].message, "unknown network interface");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<http_client id=\"client\"> refers to `nope`, which is not a network component in `# components`"
+        );
+    }
+
+    #[test]
+    fn a_service_requires_the_embassy_runtime() {
+        let src = with_service("<http_client id=\"client\" network=\"$home\" />");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_REQUIRES_EMBASSY);
+        assert_eq!(errors[0].message, "HTTP client requires embassy");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<http_client id=\"client\"> needs the embassy runtime; change <runtime type=\"..\" /> to embassy"
+        );
+    }
+
+    #[test]
+    fn a_buffer_below_the_protocol_floor_is_refused() {
+        let src =
+            with_service("<http_client id=\"client\" network=\"$home\" rx_buffer_size=\"256\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_BUFFER_TOO_SMALL);
+        assert_eq!(errors[0].message, "buffer too small");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<http_client id=\"client\"> rx_buffer_size=\"256\" is below the minimum of 512 bytes"
+        );
+
+        // TLS records need more room than plain HTTP headers do.
+        let src = with_service(
+            "<https_client id=\"secure\" network=\"$home\" rx_buffer_size=\"1024\" />",
+        );
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_BUFFER_TOO_SMALL);
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<https_client id=\"secure\"> rx_buffer_size=\"1024\" is below the minimum of 4096 bytes"
+        );
+    }
+
+    #[test]
+    fn an_insecure_https_client_warns_and_still_lowers() {
+        let src =
+            with_service("<https_client id=\"secure\" network=\"$home\" insecure=\"true\" />");
+        let board = lower_src_with(&src, embassy_meta()).expect("a warning is not an error");
+        assert_eq!(board.warnings.len(), 1);
+        assert_eq!(board.warnings[0].severity, Severity::Warning);
+        assert_eq!(board.warnings[0].code, codes::SERVICE_INSECURE_WARNING);
+        assert_eq!(
+            board.warnings[0].message,
+            "insecure TLS verification enabled"
+        );
+        assert_eq!(
+            board.warnings[0].labels[0].text,
+            "server certificates will not be validated"
+        );
+        let Service::HttpsClient(client) = &board.services[0] else {
+            panic!("the service is an https client");
+        };
+        assert!(client.insecure);
+        assert_eq!(client.rx_buffer_size, 4096);
+        assert_eq!(client.timeout_ms, 15000);
+    }
+
+    #[test]
+    fn an_unknown_service_tag_names_the_services() {
+        let src = with_service("<ntp_client id=\"clock\" network=\"$home\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_UNSUPPORTED);
+        assert_eq!(
+            errors[0].message,
+            "`<ntp_client>` is not a known element in `# services`; known: `<http_client>`, `<https_client>`"
+        );
+    }
+
+    #[test]
+    fn a_service_id_must_become_a_rust_identifier() {
+        let src = with_service("<http_client id=\"2fast\" network=\"$home\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_INVALID);
+        assert_eq!(errors[0].message, "invalid http_client");
     }
 }

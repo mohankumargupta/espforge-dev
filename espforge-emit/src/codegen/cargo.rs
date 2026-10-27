@@ -16,19 +16,33 @@ use super::chip::Chip;
 use crate::runtime_source::{RUNTIME_VERSION, RuntimeSource};
 
 /// The emitted `Cargo.toml`.
+///
+/// `clients` is what the board's `# services` declared: HTTP and HTTPS
+/// clients are runtime features, so a project only names them when it has
+/// them. The dependency crates themselves (`edge-http`, `edge-nal-embassy`,
+/// `embedded-tls`) stay in the runtime's own manifest, as the radio stack
+/// already does.
 pub fn manifest(
     meta: &Meta,
     opts: &ResolvedOptions,
     runtime: &RuntimeSource,
     chip: &Chip,
+    clients: Clients,
 ) -> Result<String> {
     let name = meta.crate_name();
     let mut doc = DocumentMut::new();
     doc["package"] = package(meta, &name);
     doc["bin"] = Item::ArrayOfTables(bin(&name));
-    doc["dependencies"] = dependencies(meta, opts, runtime, chip);
+    doc["dependencies"] = dependencies(meta, opts, runtime, chip, clients);
     doc["profile"] = profiles();
     Ok(doc.to_string())
+}
+
+/// The client services the board declares.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Clients {
+    pub http: bool,
+    pub https: bool,
 }
 
 fn package(meta: &Meta, name: &str) -> Item {
@@ -52,7 +66,13 @@ fn bin(name: &str) -> ArrayOfTables {
     bins
 }
 
-fn dependencies(meta: &Meta, opts: &ResolvedOptions, runtime: &RuntimeSource, chip: &Chip) -> Item {
+fn dependencies(
+    meta: &Meta,
+    opts: &ResolvedOptions,
+    runtime: &RuntimeSource,
+    chip: &Chip,
+    clients: Clients,
+) -> Item {
     let embassy = meta.runtime == Runtime::Embassy;
     let alloc = opts.is_on("alloc");
     // `<wifi>` in `# peripherals` turns the derived `wifi` option on; the radio
@@ -62,7 +82,7 @@ fn dependencies(meta: &Meta, opts: &ResolvedOptions, runtime: &RuntimeSource, ch
     let chip_name = chip.name.as_str();
 
     let mut deps = Table::new();
-    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy, wifi));
+    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy, wifi, clients));
     deps["static_cell"] = value("2.1.1");
     deps["critical-section"] = value("1.2.0");
     deps["log"] = value("0.4.27");
@@ -193,17 +213,33 @@ fn profiles() -> Item {
 /// `espforge-runtime = { path?, version, features? }`.
 ///
 /// `wifi` implies `embassy` (the schema's `requires`), so the Wi-Fi feature
-/// list carries both, in that order.
-fn runtime_dependency(source: &RuntimeSource, embassy: bool, wifi: bool) -> Value {
+/// list carries both, in that order. `https-client` implies `http-client`
+/// (the runtime's own features), so listing just the latter is enough.
+fn runtime_dependency(
+    source: &RuntimeSource,
+    embassy: bool,
+    wifi: bool,
+    clients: Clients,
+) -> Value {
     let mut table = InlineTable::new();
     if let RuntimeSource::Path(path) = source {
         table.insert("path", Value::from(path.replace('\\', "/")));
     }
     table.insert("version", Value::from(RUNTIME_VERSION));
+    let mut features: Vec<&str> = Vec::new();
+    if embassy || wifi || clients.http || clients.https {
+        features.push("embassy");
+    }
     if wifi {
-        table.insert("features", Value::Array(array(&["embassy", "wifi"])));
-    } else if embassy {
-        table.insert("features", Value::Array(array(&["embassy"])));
+        features.push("wifi");
+    }
+    if clients.https {
+        features.push("https-client");
+    } else if clients.http {
+        features.push("http-client");
+    }
+    if !features.is_empty() {
+        table.insert("features", Value::Array(array(&features)));
     }
     Value::InlineTable(table)
 }
@@ -246,12 +282,22 @@ mod tests {
     use crate::codegen::test_support::{case, chip};
 
     fn cargo(defaults: bool, flags: &[(&str, &str)], runtime: Runtime) -> String {
+        cargo_with(defaults, flags, runtime, Clients::default())
+    }
+
+    fn cargo_with(
+        defaults: bool,
+        flags: &[(&str, &str)],
+        runtime: Runtime,
+        clients: Clients,
+    ) -> String {
         let case = case("esp32c3", runtime, defaults, flags, &[]);
         manifest(
             &case.meta,
             &case.opts,
             &RuntimeSource::Published,
             &chip("esp32c3"),
+            clients,
         )
         .unwrap()
     }
@@ -337,6 +383,7 @@ mod tests {
                 &radio.opts,
                 &RuntimeSource::Published,
                 &chip("esp32c3"),
+                Clients::default(),
             )
             .unwrap(),
         );
@@ -355,6 +402,7 @@ mod tests {
                 &case.opts,
                 &RuntimeSource::Path("..\\rt".into()),
                 &chip("esp32s3"),
+                Clients::default(),
             )
             .unwrap(),
         );
@@ -380,6 +428,47 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("opt-level = \"s\""), "{text}");
+    }
+
+    /// A client service is a runtime *feature*: the project names it, and the
+    /// runtime's own manifest owns the `edge-*`/`embedded-tls` crates (the same
+    /// split the Wi-Fi radio stack uses).
+    #[test]
+    fn an_http_client_asks_the_runtime_for_the_feature() {
+        let doc = parse(&cargo_with(
+            true,
+            &[],
+            Runtime::Embassy,
+            Clients {
+                http: true,
+                https: false,
+            },
+        ));
+        assert_eq!(
+            dependency(&doc, "espforge-runtime"),
+            "{ version = \"0.6.0\", features = [\"embassy\", \"http-client\"] }"
+        );
+        // Nothing extra lands in the project's own manifest.
+        for name in ["edge-http", "edge-net", "embedded-tls"] {
+            assert!(doc["dependencies"].get(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_https_client_implies_the_http_feature_in_the_runtime() {
+        let doc = parse(&cargo_with(
+            true,
+            &[],
+            Runtime::Embassy,
+            Clients {
+                http: false,
+                https: true,
+            },
+        ));
+        assert_eq!(
+            dependency(&doc, "espforge-runtime"),
+            "{ version = \"0.6.0\", features = [\"embassy\", \"https-client\"] }"
+        );
     }
 
     fn features(doc: &toml_edit::DocumentMut, dep: &str) -> Vec<String> {

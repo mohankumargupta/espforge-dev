@@ -14,10 +14,11 @@ use std::ops::Range;
 use espf::context::ParsedNode;
 use espforge_diagnostics::{DiagCode, Diagnostic};
 use proc_macro2::TokenStream;
+use quote::format_ident;
 
 use crate::model::{
     Board, Bus, BusId, ClaimedPin, Component, Conflict, ConflictKind, GpioDecl, Ident, Meta, Owner,
-    PeripheralClash, Pin, PinUse, ResourceGraph,
+    PeripheralClash, Pin, PinUse, ResourceGraph, Service,
 };
 
 /// One element tag: reads its node and lowers it onto the board.
@@ -58,12 +59,24 @@ pub struct Reported;
 /// The lowering context: everything an element reads and everything it records.
 pub struct LowerCx {
     errors: Vec<Diagnostic>,
+    /// Warnings, kept apart from `errors` so they never stop lowering.
+    warnings: Vec<Diagnostic>,
     gpios: Vec<GpioDecl>,
     resources: ResourceGraph,
     components: Vec<Component>,
+    services: Vec<Service>,
     /// `<gpio>` ids named by an `<spi_component cs>` reference: a chip select
     /// that names its own declaration is not a second user of that pin.
     cs_gpios: Vec<String>,
+    /// `<wifi>` radio ids and the station riding on each, in source order.
+    radios: Vec<(String, Option<String>)>,
+    /// Ids of components that provide an embassy-net stack (`<wifi_station>`),
+    /// the things a service's `network=` reference can name.
+    networks: Vec<String>,
+    /// The chip and runtime the board is built for. A few element rules need
+    /// them (a chip without a radio, a service under the blocking runtime).
+    chip: String,
+    runtime: crate::model::Runtime,
 }
 
 impl Default for LowerCx {
@@ -76,11 +89,33 @@ impl LowerCx {
     pub fn new() -> Self {
         Self {
             errors: Vec::new(),
+            warnings: Vec::new(),
             gpios: Vec::new(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
             cs_gpios: Vec::new(),
+            radios: Vec::new(),
+            networks: Vec::new(),
+            chip: String::new(),
+            runtime: crate::model::Runtime::Blocking,
         }
+    }
+
+    /// Record the chip and runtime the board is built for.
+    pub fn set_meta(&mut self, meta: &Meta) {
+        self.chip = meta.chip.clone();
+        self.runtime = meta.runtime;
+    }
+
+    /// The chip the board is built for.
+    pub fn chip(&self) -> &str {
+        &self.chip
+    }
+
+    /// The async model the board is built for.
+    pub fn runtime(&self) -> crate::model::Runtime {
+        self.runtime
     }
 
     /// Record a located problem and return the marker an element uses to stop.
@@ -94,6 +129,55 @@ impl LowerCx {
         self.errors
             .push(Diagnostic::error(code, span, message, label));
         Reported
+    }
+
+    /// Record a warning. It does not stop lowering and does not make the
+    /// build fail; it rides on the board so the pipeline can print it.
+    pub fn warn(
+        &mut self,
+        code: DiagCode,
+        span: Range<usize>,
+        message: impl Into<String>,
+        label: impl Into<String>,
+    ) {
+        self.warnings
+            .push(Diagnostic::warning(code, span, message, label));
+    }
+
+    /// Record a lowered `<wifi>` radio.
+    pub fn add_radio(&mut self, id: impl Into<String>) {
+        self.radios.push((id.into(), None));
+    }
+
+    /// Whether `<wifi id="name">` was lowered.
+    pub fn has_radio(&self, name: &str) -> bool {
+        self.radios.iter().any(|(radio, _)| radio == name)
+    }
+
+    /// The station already riding on `radio`, if any.
+    pub fn radio_station(&self, radio: &str) -> Option<&str> {
+        self.radios
+            .iter()
+            .find(|(id, _)| id == radio)
+            .and_then(|(_, station)| station.as_deref())
+    }
+
+    /// Record the station riding on `radio`.
+    pub fn set_radio_station(&mut self, radio: &str, station: impl Into<String>) {
+        if let Some((_, slot)) = self.radios.iter_mut().find(|(id, _)| id == radio) {
+            *slot = Some(station.into());
+        }
+    }
+
+    /// Record a component that provides an embassy-net stack: the target of a
+    /// service's `network=` reference.
+    pub fn add_network(&mut self, id: impl Into<String>) {
+        self.networks.push(id.into());
+    }
+
+    /// Whether `name` is a component a service can take as its network.
+    pub fn has_network_provider(&self, name: &str) -> bool {
+        self.networks.iter().any(|network| network == name)
     }
 
     /// The `<gpio>` a component refers to by id.
@@ -184,6 +268,16 @@ impl LowerCx {
         self.components.push(component);
     }
 
+    /// Record a lowered service.
+    pub fn push_service(&mut self, service: Service) {
+        self.services.push(service);
+    }
+
+    /// Every lowered service, in source order.
+    pub fn services(&self) -> &[Service] {
+        &self.services
+    }
+
     /// The node's id, with the span of the id attribute's value.
     pub fn ident(&self, node: &ParsedNode<'_>) -> Ident {
         let span = node
@@ -201,9 +295,33 @@ impl LowerCx {
                 meta,
                 resources: self.resources,
                 components: self.components,
+                services: self.services,
+                warnings: self.warnings,
             })
         } else {
             Err(self.errors)
+        }
+    }
+}
+
+/// The locals a `Lowered::emit` startup statement may name in `main()`.
+///
+/// Typed rather than a documented sentence: a typo in a startup statement is
+/// then a compile error in the emitter, not a test failure someone may forget
+/// to run.
+#[derive(Debug, Clone)]
+pub struct MainCtx {
+    pub registry: proc_macro2::Ident,
+    pub spawner: proc_macro2::Ident,
+    pub components: proc_macro2::Ident,
+}
+
+impl Default for MainCtx {
+    fn default() -> Self {
+        Self {
+            registry: format_ident!("registry"),
+            spawner: format_ident!("spawner"),
+            components: format_ident!("components"),
         }
     }
 }
@@ -216,6 +334,10 @@ pub struct EmitCx {
     prelude: Vec<TokenStream>,
     once: std::collections::BTreeSet<String>,
     safety: Vec<(String, Vec<String>)>,
+    service_fields: Vec<TokenStream>,
+    service_inits: Vec<TokenStream>,
+    startup: Vec<TokenStream>,
+    main: MainCtx,
 }
 
 /// What an [`EmitCx`] collected, in board order.
@@ -226,11 +348,45 @@ pub struct EmitParts {
     pub prelude: Vec<TokenStream>,
     /// `(anchor, lines)` pairs for the emit crate to turn into comment blocks.
     pub safety: Vec<(String, Vec<String>)>,
+    /// One field of the generated `Services` struct.
+    pub service_fields: Vec<TokenStream>,
+    /// One initialiser inside `Services::new`.
+    pub service_inits: Vec<TokenStream>,
+    /// Statements for `main()` after the scheduler starts, in first-use order.
+    pub startup: Vec<TokenStream>,
 }
 
 impl EmitCx {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The same, with the `main()` locals handed in.
+    pub fn with_main(main: MainCtx) -> Self {
+        Self {
+            main,
+            ..Self::default()
+        }
+    }
+
+    /// The locals a startup statement names.
+    pub fn main(&self) -> &MainCtx {
+        &self.main
+    }
+
+    /// One field of the generated `Services` struct.
+    pub fn service_field(&mut self, field: TokenStream) {
+        self.service_fields.push(field);
+    }
+
+    /// One initialiser inside `Services::new`.
+    pub fn service_init(&mut self, init: TokenStream) {
+        self.service_inits.push(init);
+    }
+
+    /// A statement for `main()` after the scheduler starts, in first-use order.
+    pub fn startup(&mut self, statement: TokenStream) {
+        self.startup.push(statement);
     }
 
     /// One field of the generated `Components` struct.
@@ -277,6 +433,9 @@ impl EmitCx {
             inits: self.inits,
             prelude: self.prelude,
             safety: self.safety,
+            service_fields: self.service_fields,
+            service_inits: self.service_inits,
+            startup: self.startup,
         }
     }
 }

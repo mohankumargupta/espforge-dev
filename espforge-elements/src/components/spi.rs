@@ -241,6 +241,8 @@ mod tests {
             },
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 

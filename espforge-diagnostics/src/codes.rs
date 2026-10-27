@@ -99,6 +99,10 @@ codes! {
     UART_INVALID_PERIPHERAL = "E0512";
     /// A `<uart>` pin that is not a GPIO number.
     UART_INVALID_PIN = "E0513";
+    /// A `<wifi>` on a chip with no Wi-Fi radio.
+    WIFI_NO_RADIO = "E0514";
+    /// A `<wifi>` whose id is missing or malformed.
+    WIFI_INVALID_ID = "E0515";
 
     /// An `<led>` that cannot be built.
     COMPONENT_INVALID_LED = "E0601";
@@ -131,6 +135,20 @@ codes! {
     /// A recipe component that cannot be built (the recipe's default code).
     /// Legacy component codes stop at `E0614`; this one is free.
     COMPONENT_INVALID = "E0615";
+    /// A `<wifi_station wifi>` reference to a radio that does not exist.
+    COMPONENT_UNKNOWN_WIFI = "E0616";
+    /// A second `<wifi_station>` on one `<wifi>` radio.
+    COMPONENT_WIFI_RADIO_USED = "E0617";
+    /// An `ssid` that is empty or longer than 32 bytes.
+    COMPONENT_INVALID_SSID = "E0618";
+    /// A password that is required but missing, or outside 8..=63 characters.
+    COMPONENT_INVALID_PASSWORD = "E0619";
+    /// `auth="open"` written together with a password.
+    COMPONENT_OPEN_WITH_PASSWORD = "E0620";
+    /// A `password="env:NAME"` whose variable name is not an identifier.
+    COMPONENT_INVALID_ENV = "E0621";
+    /// A `<wifi_station>` that cannot be built (missing or invalid attribute).
+    COMPONENT_INVALID_WIFI = "E0622";
 
     /// Two elements of different kinds on one pin.
     CONFLICT_PIN = "E0701";
@@ -146,6 +164,19 @@ codes! {
     CONFLICT_SPI_WIRING = "E0706";
     /// A `<uart>` that puts tx and rx on one pin.
     CONFLICT_UART_WIRING = "E0707";
+
+    /// A service `network=` reference to an interface that does not exist.
+    SERVICE_UNKNOWN_NETWORK = "E0801";
+    /// A network service declared under the blocking runtime.
+    SERVICE_REQUIRES_EMBASSY = "E0802";
+    /// A service buffer below the minimum its protocol needs.
+    SERVICE_BUFFER_TOO_SMALL = "E0803";
+    /// `<https_client insecure="true">`: certificates will not be validated.
+    SERVICE_INSECURE_WARNING = "W0804";
+    /// A service that cannot be built: a bad id or a missing attribute.
+    SERVICE_INVALID = "E0805";
+    /// A service tag no element implements.
+    SERVICE_UNSUPPORTED = "E0806";
 }
 
 #[cfg(test)]
@@ -195,9 +226,10 @@ mod tests {
                         | 301
                         | 302
                         | 306..=315
-                        | 501..=513
-                        | 601..=615
+                        | 501..=515
+                        | 601..=622
                         | 701..=707
+                        | 801..=806
                 ),
                 "{} is outside the codes this slice defines",
                 code.as_str()

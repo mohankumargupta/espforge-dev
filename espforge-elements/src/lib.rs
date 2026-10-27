@@ -25,14 +25,15 @@ pub mod generated {
 
 pub mod model;
 pub mod options;
+pub mod services;
 
 pub use core::core_from_section;
-pub use element::{Element, EmitCx, LowerCx, Lowered, Reported};
+pub use element::{Element, EmitCx, LowerCx, Lowered, MainCtx, Reported};
 pub use espforge_schema::{Compat, Kind, OptValue, OptionDef, Requires, Schema};
 pub use lower::lower;
 pub use model::{
     Board, Claim, ClaimedPin, Component, Conflict, ConflictKind, Console, Direction, GpioDecl,
-    Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime,
+    Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime, Service,
 };
 pub use options::{
     Answer, Answers, DerivedInputs, Origin, Resolved, ResolvedOptions, Why, resolve, resolve_with,

@@ -51,7 +51,16 @@ pub fn generate(
                 .get(file.out_path)
                 .with_context(|| format!("the Rust backend has no `{}`", file.out_path))?
                 .clone(),
-            Source::Cargo => cargo::manifest(meta, opts, runtime, &chip)?,
+            Source::Cargo => cargo::manifest(
+                meta,
+                opts,
+                runtime,
+                &chip,
+                cargo::Clients {
+                    http: board.uses_http(),
+                    https: board.uses_https(),
+                },
+            )?,
             Source::CargoConfig => config::cargo_config(opts, &chip)?,
             Source::EspConfig => config::esp_config().to_string(),
             Source::Toolchain => config::toolchain(&chip)?,
@@ -88,6 +97,8 @@ mod tests {
             meta: meta.clone(),
             resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
+            services: Vec::new(),
+            warnings: Vec::new(),
         };
         (board, meta, opts)
     }
