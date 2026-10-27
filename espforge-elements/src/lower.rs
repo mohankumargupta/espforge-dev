@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`"
+            "`<pwm>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`, `<uart>`"
         );
     }
 
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::COMPONENT_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`, `<i2c_component>`, `<spi_component>`"
+            "`<pwm>` is not a known element in `# components`; known: `<led>`, `<button>`, `<i2c_component>`, `<spi_component>`, `<uart_component>`"
         );
     }
 
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::PERIPHERAL_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`"
+            "`<button>` is not a known element in `# peripherals`; known: `<gpio>`, `<i2c>`, `<spi>`, `<uart>`"
         );
     }
 
@@ -752,6 +752,125 @@ mod tests {
         );
         let board = lower_src(&src).expect("one bus, two devices");
         assert_eq!(board.components.len(), 2);
+    }
+
+    const UART: &str = "# espforge\n\
+        \x20 <project name=\"uart\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"blocking\" />\n\
+        # peripherals\n\
+        \x20 <uart id=\"uart1\" uart=\"UART1\" tx=\"6\" rx=\"5\" />\n\
+        # components\n\
+        \x20 <uart_component id=\"serial\" uart=\"$uart1\" baud_rate=\"9600\" />\n\
+        # devices\n\
+        # services\n";
+
+    #[test]
+    fn uart_lowers_to_a_port_and_its_framing() {
+        let board = lower_src(UART).expect("uart lowers");
+        let Bus::Uart {
+            peripheral,
+            tx,
+            rx,
+            used_by,
+            ..
+        } = &board.resources.buses()[0]
+        else {
+            panic!("the bus is a uart bus");
+        };
+        assert_eq!(peripheral, "UART1");
+        assert_eq!((tx.pin().0, rx.pin().0), (6, 5));
+        assert_eq!(used_by.as_ref().map(|id| id.raw.as_str()), Some("serial"));
+        assert_eq!(
+            board.resources.claim_of(Pin(6)).unwrap().need,
+            PinUse::Unspecified
+        );
+        let Component::Uart(component) = &board.components[0] else {
+            panic!("the component is a uart component");
+        };
+        assert_eq!(
+            (component.baud, component.framing.parity),
+            (9600, crate::model::Parity::None)
+        );
+        assert_eq!(component.framing.stop_bits, crate::model::StopBits::One);
+    }
+
+    #[test]
+    fn uart_tx_and_rx_on_one_pin_are_uart_wiring() {
+        let errors = lower_src(&UART.replace("rx=\"5\"", "rx=\"6\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::CONFLICT_UART_WIRING);
+        assert_eq!(errors[0].message, "uart wiring");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<uart id=\"uart1\"> tx and rx cannot both be GPIO6"
+        );
+    }
+
+    #[test]
+    fn two_uarts_on_one_peripheral_are_a_peripheral_clash() {
+        let src = UART.replace(
+            "  <uart id=\"uart1\" uart=\"UART1\" tx=\"6\" rx=\"5\" />\n",
+            "  <uart id=\"uart1\" uart=\"UART1\" tx=\"6\" rx=\"5\" />\n  <uart id=\"other\" uart=\"UART1\" tx=\"7\" rx=\"8\" />\n",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::CONFLICT_PERIPHERAL);
+        assert_eq!(errors[0].message, "peripheral clash");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<uart id=\"uart1\"> and <uart id=\"other\"> both use UART1"
+        );
+    }
+
+    #[test]
+    fn an_explicit_uart_attribute_names_the_peripheral() {
+        let src = UART
+            .replace("id=\"uart1\"", "id=\"gps\"")
+            .replace("$uart1", "$gps");
+        let board = lower_src(&src).expect("gps names UART1");
+        let Bus::Uart { peripheral, id, .. } = &board.resources.buses()[0] else {
+            panic!("the bus is a uart bus");
+        };
+        assert_eq!((id.raw.as_str(), peripheral.as_str()), ("gps", "UART1"));
+    }
+
+    #[test]
+    fn an_uart_id_must_be_one_of_the_four_ports() {
+        let src = UART
+            .replace("id=\"uart1\" uart=\"UART1\"", "id=\"uart4\"")
+            .replace("$uart1", "$uart4");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::UART_INVALID_ID);
+        assert_eq!(errors[0].message, "invalid uart id");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<uart id=\"uart4\">: the id must be uart0, uart1, uart2 or uart3 (or give uart=\"UART1\" explicitly)"
+        );
+    }
+
+    #[test]
+    fn a_zero_baud_rate_is_refused() {
+        let errors = lower_src(&UART.replace("baud_rate=\"9600\"", "baud_rate=\"0\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_INVALID_BAUD);
+        assert_eq!(errors[0].message, "invalid baud_rate");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<uart_component id=\"serial\"> baud_rate=\"0\" must be greater than 0"
+        );
+    }
+
+    #[test]
+    fn one_uart_port_takes_exactly_one_component() {
+        let src = UART.replace(
+            "  <uart_component id=\"serial\" uart=\"$uart1\" baud_rate=\"9600\" />\n",
+            "  <uart_component id=\"serial\" uart=\"$uart1\" baud_rate=\"9600\" />\n  <uart_component id=\"other\" uart=\"$uart1\" baud_rate=\"115200\" />\n",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::COMPONENT_UART_USED);
+        assert_eq!(errors[0].message, "uart already used");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<uart_component id=\"serial\"> and <uart_component id=\"other\"> both use <uart id=\"uart1\">"
+        );
     }
 
     #[test]

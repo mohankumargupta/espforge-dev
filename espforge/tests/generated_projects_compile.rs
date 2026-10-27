@@ -76,23 +76,10 @@ struct Case {
     inline: Option<&'static str>,
 }
 
-/// The i2c example with its bus moved to the second instance: esp-hal has
-/// `I2C1` on `esp32s3` (not on `esp32c3`), so this is the proof that the
-/// runtime bus is not hardcoded to `I2C0`.
-const I2C1_ON_S3: &str = "# espforge\n\
-    \x20 <project name=\"i2c_example\" />\n\
-    \x20 <chip type=\"esp32s3\" />\n\
-    \x20 <runtime type=\"blocking\" />\n\
-    # peripherals\n\
-    \x20 <i2c id=\"i2c1\" sda=\"6\" scl=\"7\" frequency=\"100kHz\" />\n\
-    # components\n\
-    \x20 <i2c_component id=\"i2c_tester\" i2c=\"$i2c1\" />\n\
-    # devices\n\
-    # services\n";
-
-/// The cells this test compiles. `esp32c3` is the runnable target here; the
-/// one `esp32s3` case exists because the C3 has no `I2C1` and is skipped by
-/// the toolchain, not by the emit.
+/// The cells this test compiles, all on `esp32c3`: the only target this
+/// checkout installs. `esp32s3` is what would prove a non-default instance
+/// (`I2C1` does not exist on the C3, `SPI3`/`UART2` are chip-dependent), but
+/// the Xtensa toolchain is out of scope here — see `buses.md` §11.
 const CASES: &[Case] = &[
     Case {
         example: "01.Basics/helloworld",
@@ -143,10 +130,16 @@ const CASES: &[Case] = &[
         inline: None,
     },
     Case {
-        example: "04.Communication/i2c_example",
-        chip: "esp32s3",
+        example: "04.Communication/uart_example",
+        chip: "esp32c3",
         runtime: Runtime::Blocking,
-        inline: Some(I2C1_ON_S3),
+        inline: None,
+    },
+    Case {
+        example: "04.Communication/uart_example_async",
+        chip: "esp32c3",
+        runtime: Runtime::Embassy,
+        inline: None,
     },
 ];
 

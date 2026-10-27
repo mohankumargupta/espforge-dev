@@ -3,6 +3,7 @@
 pub mod i2c;
 pub mod recipe;
 pub mod spi;
+pub mod uart;
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};

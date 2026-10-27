@@ -44,8 +44,10 @@ mod hw {
 
     mod i2c;
     mod spi;
+    mod uart;
     pub use i2c::*;
     pub use spi::*;
+    pub use uart::*;
 
     use esp_hal::gpio::Level;
     use esp_hal::gpio::{Input, InputConfig, InputPin, Pull};
