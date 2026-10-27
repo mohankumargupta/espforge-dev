@@ -206,17 +206,17 @@ pub use hw::*;
 #[cfg(feature = "https-client")]
 extern crate alloc;
 
-/// Network services: the outgoing HTTP/HTTPS clients. Gated on the target like
-/// `hw`, and on the `http-client` feature so a project with no service never
-/// pulls in `edge-http` or `embedded-tls`.
+/// Network services: the outgoing HTTP/HTTPS and WebSocket clients. Gated on
+/// the target like `hw`, and on the client features so a project with no
+/// service never pulls in `edge-http`, `edge-ws` or `embedded-tls`.
 ///
-/// Also built under `test`, so the URL-splitting and framing helpers have host
-/// unit tests.
+/// Also built under `test`, so the target-free pieces (the URL splitting and
+/// the WebSocket vocabulary) have host unit tests.
 #[cfg(any(target_arch = "riscv32", target_arch = "xtensa", test))]
-#[cfg(feature = "http-client")]
+#[cfg(any(feature = "http-client", feature = "ws-client"))]
 mod services;
 #[cfg(any(target_arch = "riscv32", target_arch = "xtensa", test))]
-#[cfg(feature = "http-client")]
+#[cfg(any(feature = "http-client", feature = "ws-client"))]
 pub use services::*;
 
 #[cfg(test)]

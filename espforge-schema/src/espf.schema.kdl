@@ -277,7 +277,7 @@ section "devices" {
 // ----------------------------------------------------------------- services
 
 section "services" {
-    summary "Software services: http_client, https_client"
+    summary "Software services: http_client, https_client, ws_client, wss_client"
     description "Services are software, not hardware: they refer to components or devices, never peripherals."
 }
 
@@ -326,6 +326,55 @@ element "https_client" section="services" {
     example "insecure for development" #"<https_client id="dev_client" network="$home" insecure="true" />"#
     see_also "components/wifi_station"
     see_also "services/http_client"
+}
+
+element "ws_client" section="services" {
+    summary "Async WebSocket client over an established network interface"
+    description "Provides outgoing RFC 6455 WebSocket connections (ws://) using edge-ws and edge-http."
+    attr "id" kind="ident" required=#true
+    attr "network" kind="ref" to="wifi_station" required=#true {
+        help "The network component providing TCP/IP connectivity."
+    }
+    attr "rx_buffer_size" kind="u32" default="2048" {
+        help "Internal receive buffer size in bytes for handshake headers and incoming frame payloads."
+    }
+    attr "tx_buffer_size" kind="u32" default="1024" {
+        help "Internal transmit buffer size in bytes for outgoing frame payloads."
+    }
+    attr "timeout_ms" kind="u32" default="10000" {
+        help "Handshake connection and message timeout in milliseconds."
+    }
+    example "minimal" #"<ws_client id="ws" network="$home" />"#
+    example "custom buffers" #"<ws_client id="ws" network="$home" rx_buffer_size="4096" tx_buffer_size="2048" timeout_ms="15000" />"#
+    see_also "components/wifi_station"
+    see_also "services/wss_client"
+    see_also "services/http_client"
+}
+
+element "wss_client" section="services" {
+    summary "Async TLS 1.3 encrypted WebSocket client over an established network interface"
+    description "Provides outgoing secure RFC 6455 WebSocket connections (wss://) using edge-ws over embedded-tls."
+    attr "id" kind="ident" required=#true
+    attr "network" kind="ref" to="wifi_station" required=#true {
+        help "The network component providing TCP/IP connectivity."
+    }
+    attr "rx_buffer_size" kind="u32" default="4096" {
+        help "Receive buffer size in bytes (TLS records require larger buffers; minimum 4096)."
+    }
+    attr "tx_buffer_size" kind="u32" default="2048" {
+        help "Transmit buffer size in bytes."
+    }
+    attr "timeout_ms" kind="u32" default="15000" {
+        help "Connection, TLS handshake and WebSocket upgrade timeout in milliseconds."
+    }
+    attr "insecure" kind="bool" default="false" {
+        help "When true, skips server X.509 certificate verification. Emits a build warning."
+    }
+    example "secure client" #"<wss_client id="secure_ws" network="$home" />"#
+    example "insecure for development" #"<wss_client id="dev_ws" network="$home" insecure="true" />"#
+    see_also "components/wifi_station"
+    see_also "services/ws_client"
+    see_also "services/https_client"
 }
 
 // ------------------------------------------------------------------- options

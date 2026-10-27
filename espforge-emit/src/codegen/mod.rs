@@ -59,6 +59,8 @@ pub fn generate(
                 cargo::Clients {
                     http: board.uses_http(),
                     https: board.uses_https(),
+                    ws: board.uses_ws(),
+                    wss: board.uses_wss(),
                 },
             )?,
             Source::CargoConfig => config::cargo_config(opts, &chip)?,

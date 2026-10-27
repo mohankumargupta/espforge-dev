@@ -17,11 +17,11 @@ use crate::runtime_source::{RUNTIME_VERSION, RuntimeSource};
 
 /// The emitted `Cargo.toml`.
 ///
-/// `clients` is what the board's `# services` declared: HTTP and HTTPS
-/// clients are runtime features, so a project only names them when it has
-/// them. The dependency crates themselves (`edge-http`, `edge-nal-embassy`,
-/// `embedded-tls`) stay in the runtime's own manifest, as the radio stack
-/// already does.
+/// `clients` is what the board's `# services` declared: the HTTP, HTTPS,
+/// WebSocket and secure-WebSocket clients are runtime features, so a project
+/// only names them when it has them. The dependency crates themselves
+/// (`edge-http`, `edge-ws`, `edge-nal-embassy`, `embedded-tls`) stay in the
+/// runtime's own manifest, as the radio stack already does.
 pub fn manifest(
     meta: &Meta,
     opts: &ResolvedOptions,
@@ -43,6 +43,8 @@ pub fn manifest(
 pub struct Clients {
     pub http: bool,
     pub https: bool,
+    pub ws: bool,
+    pub wss: bool,
 }
 
 fn package(meta: &Meta, name: &str) -> Item {
@@ -213,8 +215,9 @@ fn profiles() -> Item {
 /// `espforge-runtime = { path?, version, features? }`.
 ///
 /// `wifi` implies `embassy` (the schema's `requires`), so the Wi-Fi feature
-/// list carries both, in that order. `https-client` implies `http-client`
-/// (the runtime's own features), so listing just the latter is enough.
+/// list carries both, in that order. `https-client` implies `http-client` and
+/// `wss-client` implies `ws-client` (the runtime's own features), so listing
+/// just the stronger of each pair is enough.
 fn runtime_dependency(
     source: &RuntimeSource,
     embassy: bool,
@@ -227,11 +230,16 @@ fn runtime_dependency(
     }
     table.insert("version", Value::from(RUNTIME_VERSION));
     let mut features: Vec<&str> = Vec::new();
-    if embassy || wifi || clients.http || clients.https {
+    if embassy || wifi || clients.http || clients.https || clients.ws || clients.wss {
         features.push("embassy");
     }
     if wifi {
         features.push("wifi");
+    }
+    if clients.wss {
+        features.push("wss-client");
+    } else if clients.ws {
+        features.push("ws-client");
     }
     if clients.https {
         features.push("https-client");
@@ -441,7 +449,7 @@ mod tests {
             Runtime::Embassy,
             Clients {
                 http: true,
-                https: false,
+                ..Default::default()
             },
         ));
         assert_eq!(
@@ -461,13 +469,52 @@ mod tests {
             &[],
             Runtime::Embassy,
             Clients {
-                http: false,
                 https: true,
+                ..Default::default()
             },
         ));
         assert_eq!(
             dependency(&doc, "espforge-runtime"),
             "{ version = \"0.6.0\", features = [\"embassy\", \"https-client\"] }"
+        );
+    }
+
+    /// A WebSocket client is a runtime feature too, and `wss` implies the
+    /// plain `ws` one (the runtime's own feature graph).
+    #[test]
+    fn a_ws_client_asks_the_runtime_for_the_feature() {
+        let doc = parse(&cargo_with(
+            true,
+            &[],
+            Runtime::Embassy,
+            Clients {
+                ws: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            dependency(&doc, "espforge-runtime"),
+            "{ version = \"0.6.0\", features = [\"embassy\", \"ws-client\"] }"
+        );
+        for name in ["edge-ws", "edge-http", "embedded-tls"] {
+            assert!(doc["dependencies"].get(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_wss_client_implies_the_ws_feature_in_the_runtime() {
+        let doc = parse(&cargo_with(
+            true,
+            &[],
+            Runtime::Embassy,
+            Clients {
+                wss: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            dependency(&doc, "espforge-runtime"),
+            "{ version = \"0.6.0\", features = [\"embassy\", \"wss-client\"] }"
         );
     }
 

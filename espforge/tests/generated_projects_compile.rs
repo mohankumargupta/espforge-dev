@@ -159,6 +159,18 @@ const CASES: &[Case] = &[
         runtime: Runtime::Embassy,
         inline: None,
     },
+    Case {
+        example: "05.Networking/ws_client",
+        chip: "esp32c3",
+        runtime: Runtime::Embassy,
+        inline: None,
+    },
+    Case {
+        example: "05.Networking/wss_client",
+        chip: "esp32c3",
+        runtime: Runtime::Embassy,
+        inline: None,
+    },
 ];
 
 #[test]

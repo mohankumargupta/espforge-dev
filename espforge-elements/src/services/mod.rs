@@ -4,12 +4,15 @@
 //! provides the interface it rides on — today a `<wifi_station>` and its
 //! embassy-net stack.
 //!
-//! Both service elements share the wording of their diagnostics here, so the
-//! two files differ only in what makes them different (TLS buffers, the
-//! `insecure` flag) rather than in how they say "unknown network".
+//! The service elements share the wording of their diagnostics here, so the
+//! four files differ only in what makes them different (TLS buffers, the
+//! `insecure` flag, the WebSocket handshake) rather than in how they say
+//! "unknown network".
 
 pub mod http_client;
 pub mod https_client;
+pub mod ws_client;
+pub mod wss_client;
 
 use espf::context::ParsedNode;
 use espf::diag::node_span;

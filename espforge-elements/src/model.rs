@@ -546,6 +546,8 @@ macro_rules! service_enum {
 service_enum! {
     HttpClient(crate::services::http_client::HttpClientService),
     HttpsClient(crate::services::https_client::HttpsClientService),
+    WsClient(crate::services::ws_client::WsClientService),
+    WssClient(crate::services::wss_client::WssClientService),
 }
 
 /// Everything the emitters need: the project settings, the resources it owns,
@@ -574,6 +576,20 @@ impl Board {
         self.services
             .iter()
             .any(|service| matches!(service, Service::HttpsClient(_)))
+    }
+
+    /// Whether any plain WebSocket client service is declared.
+    pub fn uses_ws(&self) -> bool {
+        self.services
+            .iter()
+            .any(|service| matches!(service, Service::WsClient(_)))
+    }
+
+    /// Whether any TLS (secure WebSocket) client service is declared.
+    pub fn uses_wss(&self) -> bool {
+        self.services
+            .iter()
+            .any(|service| matches!(service, Service::WssClient(_)))
     }
 }
 

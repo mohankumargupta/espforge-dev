@@ -25,6 +25,7 @@ use embedded_io_async::Write;
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 
 use super::http_client::{HttpError, decimal, parse_url};
+use super::rng::EspRng;
 
 /// What `<https_client>` declared on the board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,35 +226,3 @@ fn body_of(response: &[u8]) -> &[u8] {
         None => response,
     }
 }
-
-/// `esp-hal`'s RNG, wrapped as the `rand_core` 0.6 trait `embedded-tls` draws
-/// from. `esp-hal` implements `RngCore` but not the `CryptoRng` marker, so the
-/// wrapper is what supplies it.
-struct EspRng(esp_hal::rng::Rng);
-
-impl EspRng {
-    fn new() -> Self {
-        Self(esp_hal::rng::Rng::new())
-    }
-}
-
-impl rand_core::RngCore for EspRng {
-    fn next_u32(&mut self) -> u32 {
-        self.0.random()
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        ((self.0.random() as u64) << 32) | self.0.random() as u64
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        self.0.read(dest);
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        self.0.read(dest);
-        Ok(())
-    }
-}
-
-impl rand_core::CryptoRng for EspRng {}

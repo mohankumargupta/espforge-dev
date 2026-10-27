@@ -1152,7 +1152,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::SERVICE_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<ntp_client>` is not a known element in `# services`; known: `<http_client>`, `<https_client>`"
+            "`<ntp_client>` is not a known element in `# services`; known: `<http_client>`, `<https_client>`, `<ws_client>`, `<wss_client>`"
         );
     }
 
@@ -1162,5 +1162,82 @@ mod tests {
         let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
         assert_eq!(errors[0].code, codes::SERVICE_INVALID);
         assert_eq!(errors[0].message, "invalid http_client");
+    }
+
+    #[test]
+    fn a_ws_client_lowers_over_the_stations_stack() {
+        let src = with_service("<ws_client id=\"ws\" network=\"$home\" />");
+        let board = lower_src_with(&src, embassy_meta()).expect("the ws client lowers");
+        let Service::WsClient(client) = &board.services[0] else {
+            panic!("the service is a ws client");
+        };
+        assert_eq!(client.id.raw, "ws");
+        assert_eq!(client.network.raw, "home");
+        assert_eq!((client.rx_buffer_size, client.tx_buffer_size), (2048, 1024));
+        assert_eq!(client.timeout_ms, 10000);
+        assert!(board.uses_ws());
+        assert!(!board.uses_wss());
+    }
+
+    #[test]
+    fn a_ws_client_requires_the_embassy_runtime() {
+        let src = with_service("<ws_client id=\"ws\" network=\"$home\" />");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_REQUIRES_EMBASSY);
+        assert_eq!(errors[0].message, "WebSocket client requires embassy");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ws_client id=\"ws\"> needs the embassy runtime; change <runtime type=\"..\" /> to embassy"
+        );
+    }
+
+    #[test]
+    fn a_ws_client_network_must_be_a_component_that_has_a_stack() {
+        let src = with_service("<ws_client id=\"ws\" network=\"$nope\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_UNKNOWN_NETWORK);
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ws_client id=\"ws\"> refers to `nope`, which is not a network component in `# components`"
+        );
+    }
+
+    #[test]
+    fn an_insecure_wss_client_warns_and_still_lowers() {
+        let src =
+            with_service("<wss_client id=\"secure_ws\" network=\"$home\" insecure=\"true\" />");
+        let board = lower_src_with(&src, embassy_meta()).expect("a warning is not an error");
+        assert_eq!(board.warnings.len(), 1);
+        assert_eq!(board.warnings[0].severity, Severity::Warning);
+        assert_eq!(board.warnings[0].code, codes::SERVICE_INSECURE_WARNING);
+        let Service::WssClient(client) = &board.services[0] else {
+            panic!("the service is a wss client");
+        };
+        assert!(client.insecure);
+        assert_eq!(client.rx_buffer_size, 4096);
+        assert_eq!(client.timeout_ms, 15000);
+        assert!(board.uses_wss());
+    }
+
+    #[test]
+    fn a_websocket_buffer_below_its_floor_is_refused() {
+        let src = with_service("<ws_client id=\"ws\" network=\"$home\" rx_buffer_size=\"256\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_BUFFER_TOO_SMALL);
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ws_client id=\"ws\"> rx_buffer_size=\"256\" is below the minimum of 512 bytes"
+        );
+
+        // TLS records need more room than plain WebSocket frames do.
+        let src = with_service(
+            "<wss_client id=\"secure_ws\" network=\"$home\" rx_buffer_size=\"1024\" />",
+        );
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_BUFFER_TOO_SMALL);
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<wss_client id=\"secure_ws\"> rx_buffer_size=\"1024\" is below the minimum of 4096 bytes"
+        );
     }
 }

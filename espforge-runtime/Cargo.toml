@@ -25,6 +25,10 @@ embassy-net = { version = "0.9", features = ["tcp", "udp", "dhcpv4", "medium-eth
 # and the embassy bridge with it; both are named here so the versions are
 # pinned where the code that uses them lives.
 edge-http = { version = "0.8", default-features = false, features = ["io"], optional = true }
+# RFC 6455 WebSocket framing for the WebSocket clients (`ws-client`). Its
+# `io` feature is what adds the async frame read/write methods over
+# `embedded-io-async`.
+edge-ws = { version = "0.8", default-features = false, features = ["io"], optional = true }
 # The `Read`/`Write` traits edge-http and embedded-tls are generic over.
 embedded-io-async = { version = "0.7", optional = true }
 edge-nal = { version = "0.7", default-features = false, optional = true }
@@ -60,6 +64,22 @@ http-client = [
 
 # The TLS 1.3 HTTPS client (`HttpsClient`), which implies the plain one.
 https-client = ["http-client", "dep:embedded-tls", "dep:rand_core"]
+
+# The outgoing WebSocket client (`WsClient`), plain `ws://`. Like the HTTP
+# client it implies `wifi` (the only network provider today); `rand_core` is
+# for the handshake nonce and the per-frame client mask.
+ws-client = [
+    "wifi",
+    "dep:edge-ws",
+    "dep:edge-http",
+    "dep:edge-nal",
+    "dep:edge-nal-embassy",
+    "dep:embedded-io-async",
+    "dep:rand_core",
+]
+
+# The TLS 1.3 WebSocket client (`WssClient`), which implies the plain one.
+wss-client = ["ws-client", "dep:embedded-tls"]
 
 # esp-hal only builds for esp targets, so keep it invisible to host builds.
 # The generated project supplies the chip feature.
