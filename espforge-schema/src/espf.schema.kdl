@@ -271,6 +271,14 @@ options {
         requires "unstable-hal"
     }
 
+    // Computed from a `<wifi>` radio in `# peripherals`; users may not set it.
+    // No chip `compatible` list: a chip without a radio is refused by `<wifi>`
+    // itself, where the error can point at the element that asked for it.
+    option "wifi" display_name="Enable Wi-Fi via the esp-radio crate." derived=#true {
+        requires "alloc" "unstable-hal" "embassy"
+        help "esp-radio comes with no stability guarantees at this time. Wi-Fi also allocates a heap."
+    }
+
     option "probe-rs" display_name="Use probe-rs to flash and monitor instead of espflash." {
         requires_tools "probe-rs"
         help "probe-rs is a debugger that connects"

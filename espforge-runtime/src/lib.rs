@@ -49,6 +49,13 @@ mod hw {
     pub use spi::*;
     pub use uart::*;
 
+    /// The Wi-Fi station driver ([`Wifi`], [`WifiConfig`], [`WifiError`]),
+    /// behind the `wifi` feature: a project with no radio never compiles it.
+    #[cfg(feature = "wifi")]
+    mod wifi;
+    #[cfg(feature = "wifi")]
+    pub use wifi::*;
+
     use esp_hal::gpio::Level;
     use esp_hal::gpio::{Input, InputConfig, InputPin, Pull};
 

@@ -88,7 +88,7 @@ pub fn validate<'a>(src: &'a str, overrides: &Overrides) -> Result<Checked<'a>, 
     let espforge_nodes = &parsed.sections["espforge"];
     let (mut meta, opt_node) = core_from_section(header, espforge_nodes)?;
     let mut answers = Answers::from_node(schema(), opt_node, header..header)?;
-    let derived = DerivedInputs::from_nodes(espforge_nodes, &parsed.sections["services"]);
+    let derived = DerivedInputs::from_nodes(espforge_nodes, &parsed.sections["peripherals"]);
 
     // 3. Overrides win over the file; collect a note when they change
     // something.

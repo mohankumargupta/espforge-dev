@@ -1,8 +1,8 @@
 //! Fixtures shared by the codegen backends' unit tests.
 //!
-//! `wifi` and `embassy` are derived flags: they follow `# services` and the
+//! `wifi` and `embassy` are derived flags: they follow `# peripherals` and the
 //! runtime, and setting them by hand is a resolver error. So the fixture takes
-//! the runtime and the service list, not an option flag for them.
+//! the runtime and the peripheral list, not an option flag for them.
 
 use espforge_elements::{Answers, Console, DerivedInputs, Meta, ResolvedOptions, Runtime, resolve};
 use espforge_schema::schema;
@@ -16,14 +16,15 @@ pub struct Case {
 
 /// A resolved project: `hello world` on `chip`, with `flags` applied.
 ///
-/// `defaults` is the `<options defaults=...>` switch; `services` are the names
-/// in `# services` (the only way to turn `wifi` on).
+/// `defaults` is the `<options defaults=...>` switch; `peripherals` are the
+/// tags in `# peripherals` (a `<wifi>` there is the only way to turn `wifi`
+/// on).
 pub fn case(
     chip: &str,
     runtime: Runtime,
     defaults: bool,
     flags: &[(&str, &str)],
-    services: &[&str],
+    peripherals: &[&str],
 ) -> Case {
     let meta = Meta {
         runtime,
@@ -37,7 +38,7 @@ pub fn case(
             .unwrap_or_else(|e| panic!("option `{name}={value}`: {e:?}"));
     }
     let derived = DerivedInputs {
-        services: services
+        peripherals: peripherals
             .iter()
             .map(|name| (name.to_string(), 0..1))
             .collect(),

@@ -1367,7 +1367,8 @@ options {
         assert_eq!(pull_up.kind, AttrKind::Bool);
         assert!(!pull_up.required);
         assert_eq!(pull_up.default.as_deref(), Some("false"));
-        // Only the options helloworld depends on.
+        // Only the options helloworld depends on; `wifi` arrives with the
+        // radio that computes it.
         let names: Vec<&str> = schema.options.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1375,11 +1376,19 @@ options {
                 "unstable-hal",
                 "alloc",
                 "embassy",
+                "wifi",
                 "probe-rs",
                 "stack-smashing-protection",
                 "wokwi",
                 "keep-zig-source"
             ]
+        );
+        let wifi = schema.get("wifi").unwrap();
+        assert!(wifi.derived, "`wifi` follows the radio, not <options>");
+        assert_eq!(wifi.requires.options, ["alloc", "unstable-hal", "embassy"]);
+        assert!(
+            wifi.compat.chips.is_none(),
+            "a chip without a radio is refused by <wifi>, not by an option list"
         );
         assert_eq!(
             schema.get("unstable-hal").unwrap().default,

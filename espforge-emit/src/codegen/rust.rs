@@ -210,8 +210,27 @@ fn lib(meta: &Meta) -> Result<String> {
     Ok(text)
 }
 
-fn main(_board: &Board, meta: &Meta, _opts: &ResolvedOptions) -> Result<String> {
+/// Whether `main()` must install a heap allocator.
+///
+/// The radio is the only thing that asks for one: `esp-radio` allocates, and
+/// without a heap the WiFi tasks fail to start. Legacy gated the same emitter
+/// on `<wifi>`/`<ble-trouble>`.
+fn needs_heap(opts: &ResolvedOptions) -> bool {
+    opts.is_on("wifi")
+}
+
+fn main(_board: &Board, meta: &Meta, opts: &ResolvedOptions) -> Result<String> {
     let crate_name = format_ident!("{}", meta.crate_name());
+
+    // 72 KiB is what the legacy `wifi_station` golden allocated for the radio
+    // stack. The literal is written out so the number reaches the file
+    // unsuffixed, and the empty stream is inert in the blocking `main` (which
+    // cannot have a radio anyway: `wifi` requires `embassy`).
+    let heap = if needs_heap(opts) {
+        quote::quote! { esp_alloc::heap_allocator!(size: 72 * 1024); }
+    } else {
+        quote::quote! {}
+    };
 
     let tokens = match meta.runtime {
         Runtime::Blocking => quote::quote! {
@@ -262,6 +281,7 @@ fn main(_board: &Board, meta: &Meta, _opts: &ResolvedOptions) -> Result<String> 
                 esp_println::print!("\x1b[20h");
                 esp_bootloader_esp_idf::esp_app_desc!();
                 let peripherals = esp_hal::init(esp_hal::Config::default());
+                #heap
                 #[allow(unused_mut)]
                 let mut registry = PeripheralRegistry::new(peripherals);
 
@@ -543,5 +563,38 @@ mod tests {
         let text = generated(&board, &case.meta).unwrap();
         assert!(text.contains("pub struct Components {}"), "{text}");
         assert!(!text.contains("SAFETY"), "{text}");
+    }
+
+    fn empty_board(case: &crate::codegen::test_support::Case) -> Board {
+        Board {
+            meta: case.meta.clone(),
+            resources: ResourceGraph::default(),
+            components: Vec::new(),
+        }
+    }
+
+    /// The heap line, spelled exactly as the legacy `wifi_station` golden has
+    /// it, in the position it has there: the radio allocates, and the
+    /// allocator must exist before `PeripheralRegistry::new` takes the
+    /// peripherals apart.
+    #[test]
+    fn wifi_installs_the_heap_the_radio_needs() {
+        let case = case("esp32c3", Runtime::Embassy, true, &[], &["wifi"]);
+        let text = main(&empty_board(&case), &case.meta, &case.opts).unwrap();
+        assert!(
+            text.contains("esp_alloc::heap_allocator!(size : 72 * 1024);"),
+            "{text}"
+        );
+        let init = text.find("esp_hal::init(").unwrap();
+        let heap = text.find("heap_allocator!").unwrap();
+        let registry = text.find("PeripheralRegistry::new(").unwrap();
+        assert!(init < heap && heap < registry, "{text}");
+    }
+
+    #[test]
+    fn a_project_without_a_radio_allocates_nothing() {
+        let case = case("esp32c3", Runtime::Embassy, true, &[], &[]);
+        let text = main(&empty_board(&case), &case.meta, &case.opts).unwrap();
+        assert!(!text.contains("heap_allocator"), "{text}");
     }
 }

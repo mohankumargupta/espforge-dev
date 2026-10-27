@@ -212,16 +212,16 @@ impl Answers {
 /// Facts the derived flags and checks are computed from.
 #[derive(Debug, Clone, Default)]
 pub struct DerivedInputs {
-    /// Tag and span of every element in `# services`.
-    pub services: Vec<(String, Range<usize>)>,
+    /// Tag and span of every element in `# peripherals`.
+    pub peripherals: Vec<(String, Range<usize>)>,
     /// Span of `<console>` in `# espforge`, if present.
     pub console_span: Option<Range<usize>>,
 }
 
 impl DerivedInputs {
-    pub fn from_nodes(espforge: &[ParsedNode], services: &[ParsedNode]) -> Self {
+    pub fn from_nodes(espforge: &[ParsedNode], peripherals: &[ParsedNode]) -> Self {
         Self {
-            services: services
+            peripherals: peripherals
                 .iter()
                 .map(|n| (n.tag_name.to_string(), node_span(n)))
                 .collect(),
@@ -256,14 +256,14 @@ fn derived_flag(
             ))
         }
         "wifi" => {
-            let service = derived.services.iter().find(|(t, _)| t == "wifi");
+            let radio = derived.peripherals.iter().find(|(t, _)| t == "wifi");
             Some((
-                service.is_some(),
-                service.map(|(_, s)| s.clone()),
-                if service.is_some() {
-                    "derived from <wifi> in # services".into()
+                radio.is_some(),
+                radio.map(|(_, s)| s.clone()),
+                if radio.is_some() {
+                    "derived from <wifi> in # peripherals".into()
                 } else {
-                    "off because there is no <wifi> in # services".into()
+                    "off because there is no <wifi> in # peripherals".into()
                 },
             ))
         }
@@ -604,7 +604,6 @@ options {
     option "embassy" derived=#true selection_group="base" { requires "unstable-hal" }
     option "wifi" derived=#true {
         requires "alloc" "unstable-hal" "embassy"
-        compatible { chip "esp32" "esp32c3" }
     }
     option "log" default=#true {}
     option "only-esp32" { compatible { chip "esp32" } }
@@ -615,9 +614,9 @@ options {
 }
 "#;
 
-    fn file(chip: &str, runtime: &str, extra_espforge: &str, services: &str) -> String {
+    fn file(chip: &str, runtime: &str, extra_espforge: &str, peripherals: &str) -> String {
         format!(
-            "# espforge\n  <project name=\"t\" />\n  <chip type=\"{chip}\" />\n  <runtime type=\"{runtime}\" />\n{extra_espforge}# peripherals\n# components\n# devices\n# services\n{services}"
+            "# espforge\n  <project name=\"t\" />\n  <chip type=\"{chip}\" />\n  <runtime type=\"{runtime}\" />\n{extra_espforge}# peripherals\n{peripherals}# components\n# devices\n# services\n"
         )
     }
 
@@ -628,7 +627,7 @@ options {
         let nodes = &p.sections["espforge"];
         let (core, opt) = core_from_section(header, nodes).unwrap();
         let answers = Answers::from_node(&schema, opt, header..header)?;
-        let derived = DerivedInputs::from_nodes(nodes, &p.sections["services"]);
+        let derived = DerivedInputs::from_nodes(nodes, &p.sections["peripherals"]);
         resolve_with(&schema, &core, &answers, &derived)
     }
 
@@ -689,19 +688,28 @@ options {
     }
 
     #[test]
-    fn derived_flags_follow_runtime_and_services() {
-        let r = run(&file(
-            "esp32c3",
-            "embassy",
-            "",
-            "  <wifi id=\"w\" network1.ssid=\"x\" />\n",
-        ))
-        .unwrap();
+    fn derived_flags_follow_runtime_and_peripherals() {
+        let r = run(&file("esp32c3", "embassy", "", "  <wifi id=\"radio\" />\n")).unwrap();
         assert!(r.is_on("embassy") && r.is_on("wifi"));
         assert!(r.is_on("alloc") && r.is_on("unstable-hal"));
         assert!(matches!(&r.get("alloc").unwrap().why, Why::Implied(by) if by == "wifi"));
         let r = run(&file("esp32c3", "blocking", "", "")).unwrap();
         assert!(!r.is_on("embassy") && !r.is_on("wifi"));
+    }
+
+    /// The reason `wifi` is on names `# peripherals`: the same string is the
+    /// label of the `requires` error, so it has to name where the radio was
+    /// written.
+    #[test]
+    fn the_wifi_flag_says_where_the_radio_is() {
+        let r = run(&file("esp32c3", "embassy", "", "  <wifi id=\"radio\" />\n")).unwrap();
+        assert!(
+            r.get("wifi").unwrap().why.describe() == "derived from <wifi> in # peripherals",
+            "{:?}",
+            r.get("wifi").unwrap().why
+        );
+        let r = run(&file("esp32c3", "embassy", "", "")).unwrap();
+        assert!(!r.is_on("wifi"));
     }
 
     #[test]
@@ -863,7 +871,7 @@ options {
         assert_eq!(core.runtime, Runtime::Blocking);
         assert_eq!(core.console, Console::Uart);
         let answers = Answers::from_node(schema(), opt, header..header).unwrap();
-        let derived = DerivedInputs::from_nodes(nodes, &p.sections["services"]);
+        let derived = DerivedInputs::from_nodes(nodes, &p.sections["peripherals"]);
         let r = resolve(&core, &answers, &derived).unwrap();
         assert!(r.is_on("unstable-hal"));
         assert!(r.is_on("alloc"));

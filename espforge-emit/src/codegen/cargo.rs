@@ -55,10 +55,14 @@ fn bin(name: &str) -> ArrayOfTables {
 fn dependencies(meta: &Meta, opts: &ResolvedOptions, runtime: &RuntimeSource, chip: &Chip) -> Item {
     let embassy = meta.runtime == Runtime::Embassy;
     let alloc = opts.is_on("alloc");
+    // `<wifi>` in `# peripherals` turns the derived `wifi` option on; the radio
+    // stack is what that option means. BLE arrives with its own element.
+    let wifi = opts.is_on("wifi");
+    let radio = wifi;
     let chip_name = chip.name.as_str();
 
     let mut deps = Table::new();
-    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy));
+    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy, wifi));
     deps["static_cell"] = value("2.1.1");
     deps["critical-section"] = value("1.2.0");
     deps["log"] = value("0.4.27");
@@ -70,12 +74,17 @@ fn dependencies(meta: &Meta, opts: &ResolvedOptions, runtime: &RuntimeSource, ch
     hal.push("log-04");
     deps["esp-hal"] = Item::Value(dep("~1.2.2", &hal));
 
-    if embassy {
+    if embassy || radio {
         let mut features = Vec::new();
+        if radio {
+            features.push("esp-radio");
+        }
         if alloc {
             features.push("esp-alloc");
         }
-        features.push("embassy");
+        if embassy {
+            features.push("embassy");
+        }
         features.push(chip_name);
         features.push("log-04");
         deps["esp-rtos"] = Item::Value(dep("0.4.0", &features));
@@ -91,7 +100,51 @@ fn dependencies(meta: &Meta, opts: &ResolvedOptions, runtime: &RuntimeSource, ch
         deps["esp-alloc"] = Item::Value(dep("0.11.0", &[chip_name]));
     }
 
-    // Wi-Fi/BLE dependencies return in phase 4 with the `esp-radio` element.
+    if radio {
+        deps["embedded-io"] = value("0.7.1");
+        if embassy {
+            deps["embedded-io-async"] = value("0.7.0");
+            if wifi {
+                deps["embassy-net"] = Item::Value(dep(
+                    "0.9.1",
+                    &["tcp", "udp", "dhcpv4", "medium-ethernet", "log"],
+                ));
+                if let Some(mut key) = deps.key_mut("embassy-net") {
+                    key.leaf_decor_mut().set_prefix(
+                        "# for more networking protocol support see https://crates.io/crates/edge-net\n",
+                    );
+                }
+            }
+        }
+        if wifi {
+            deps["smoltcp"] = Item::Value(dep_without_defaults(
+                "0.14.0",
+                &[
+                    "medium-ethernet",
+                    "multicast",
+                    "proto-dhcpv4",
+                    "proto-dns",
+                    "proto-ipv4",
+                    "socket-dns",
+                    "socket-raw",
+                    "socket-tcp",
+                    "socket-udp",
+                    "socket-icmp",
+                    "log",
+                ],
+            ));
+        }
+        let mut features = vec![chip_name];
+        if wifi {
+            features.push("wifi");
+        }
+        if alloc {
+            features.push("esp-alloc");
+        }
+        features.push("unstable");
+        features.push("log-04");
+        deps["esp-radio"] = Item::Value(dep("1.0.0-beta.1", &features));
+    }
 
     if embassy {
         deps["embassy-executor"] = Item::Value(dep("0.10.0", &["log"]));
@@ -138,13 +191,18 @@ fn profiles() -> Item {
 }
 
 /// `espforge-runtime = { path?, version, features? }`.
-fn runtime_dependency(source: &RuntimeSource, embassy: bool) -> Value {
+///
+/// `wifi` implies `embassy` (the schema's `requires`), so the Wi-Fi feature
+/// list carries both, in that order.
+fn runtime_dependency(source: &RuntimeSource, embassy: bool, wifi: bool) -> Value {
     let mut table = InlineTable::new();
     if let RuntimeSource::Path(path) = source {
         table.insert("path", Value::from(path.replace('\\', "/")));
     }
     table.insert("version", Value::from(RUNTIME_VERSION));
-    if embassy {
+    if wifi {
+        table.insert("features", Value::Array(array(&["embassy", "wifi"])));
+    } else if embassy {
         table.insert("features", Value::Array(array(&["embassy"])));
     }
     Value::InlineTable(table)
@@ -244,6 +302,47 @@ mod tests {
         assert_eq!(
             dependency(&doc, "espforge-runtime"),
             "{ version = \"0.6.0\", features = [\"embassy\"] }"
+        );
+        // Embassy alone does not drag in the radio stack; `<wifi>` does.
+        for name in ["esp-radio", "embassy-net", "smoltcp", "embedded-io"] {
+            assert!(doc["dependencies"].get(name).is_none(), "{name}");
+        }
+    }
+
+    /// The legacy `wifi_station` golden: the only description we have of what
+    /// a working Wi-Fi project's manifest contains. `legacy/` is the oracle
+    /// until phase 7 retires it, and this test retires with it.
+    fn legacy_wifi_station() -> toml_edit::DocumentMut {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../legacy/espforge/tests/golden/",
+            "05.Networking.wifi_station.esp32c3.embassy/Cargo.toml"
+        );
+        parse(
+            &std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("reading the oracle {path}: {e}")),
+        )
+    }
+
+    /// A `<wifi>` radio must produce the golden's dependency table verbatim:
+    /// every line of it is load-bearing (the `esp-radio` feature on
+    /// `esp-rtos`, the `edge-net` comment, the long `smoltcp` feature list),
+    /// and `toml_edit` renders it without a diff if we get it right.
+    #[test]
+    fn wifi_brings_the_radio_stack_verbatim() {
+        let radio = case("esp32c3", Runtime::Embassy, true, &[], &["wifi"]);
+        let doc = parse(
+            &manifest(
+                &radio.meta,
+                &radio.opts,
+                &RuntimeSource::Published,
+                &chip("esp32c3"),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            doc["dependencies"].to_string(),
+            legacy_wifi_station()["dependencies"].to_string()
         );
     }
 
