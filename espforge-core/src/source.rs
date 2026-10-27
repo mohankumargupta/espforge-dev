@@ -2,8 +2,9 @@
 //!
 //! In this slice there is no current-directory discovery: a caller gives a
 //! FILE or `--example`. App logic and overlay files come from the example
-//! (embedded) or from next to the file. Custom Wokwi chips (`chip.json` /
-//! `chip.wasm`) return in phase 3.
+//! (embedded) or from next to the file, including a custom Wokwi chip:
+//! `chip.json` and `chip.wasm` always, and the `chip/` Zig sources only when
+//! `keep-zig-source` is on.
 
 use anyhow::Result;
 use espforge_emit::RuntimeSource;
@@ -54,15 +55,21 @@ pub fn resolve_source(file: Option<&Path>, example: Option<&str>) -> Result<Sour
 }
 
 /// Files next to a `.espf` that customise the generated Wokwi setup.
-const OVERLAY_FILES: [&str; 2] = ["diagram.json", "wokwi.toml"];
+const OVERLAY_FILES: [&str; 4] = ["diagram.json", "wokwi.toml", "chip.json", "chip.wasm"];
 
-/// The example files the render may layer on top.
-pub fn overlay_files(src: &Source) -> Result<Vec<(String, Vec<u8>)>, String> {
+/// Whether an overlay path is one the render accepts.
+fn is_overlay_file(path: &str, keep_zig: bool) -> bool {
+    OVERLAY_FILES.contains(&path) || (keep_zig && path.starts_with("chip/"))
+}
+
+/// The example files the render may layer on top. `keep_zig` decides whether
+/// the optional `chip/` source tree comes along.
+pub fn overlay_files(src: &Source, keep_zig: bool) -> Result<Vec<(String, Vec<u8>)>, String> {
     if let Some(ex) = src.example {
         return Ok(ex
             .files
             .iter()
-            .filter(|f| OVERLAY_FILES.contains(&f.path.as_str()))
+            .filter(|f| is_overlay_file(&f.path, keep_zig))
             .map(|f| (f.path.clone(), f.contents.to_vec()))
             .collect());
     }
@@ -80,7 +87,33 @@ pub fn overlay_files(src: &Source) -> Result<Vec<(String, Vec<u8>)>, String> {
             ));
         }
     }
+    if keep_zig && dir.join("chip").is_dir() {
+        read_tree(&dir.join("chip"), "chip", &mut out)?;
+    }
     Ok(out)
+}
+
+/// Collect every file under `dir`, prefixing its path with `prefix`.
+fn read_tree(dir: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = format!("{prefix}/{name}");
+        if path.is_dir() {
+            read_tree(&path, &rel, out)?;
+        } else {
+            out.push((
+                rel,
+                std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// App logic lives in `src/app.rs` first, `app/rust/app.rs` second.
@@ -153,7 +186,7 @@ mod tests {
         assert!(src.text.contains("# espforge"));
         assert!(src.dir.is_none());
         assert!(src.example.is_some());
-        let overlays = overlay_files(&src).unwrap();
+        let overlays = overlay_files(&src, false).unwrap();
         assert!(overlays.is_empty(), "helloworld has no Wokwi overlay file");
         assert!(
             String::from_utf8(app_logic(&src).unwrap())

@@ -65,6 +65,16 @@ impl<'a> Ref<'a> {
     }
 }
 
+/// A `kind="pin_or_ref"` value: a GPIO number, or anything else as a `<gpio>`
+/// reference (`cs="9"`, `cs="gpio5"`, `cs="$gpio5"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinOrRef<'a> {
+    /// `cs="9"`: the GPIO number itself.
+    Pin(Spanned<u8>),
+    /// `cs="gpio5"` or `cs="$gpio5"`: a `<gpio>` id.
+    Ref(Ref<'a>),
+}
+
 /// Why an attribute could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Issue<'a> {
@@ -181,6 +191,164 @@ fn flag_value<'a>(
     Ok(Spanned {
         value,
         span: span_of(attr),
+    })
+}
+
+/// A required `kind="freq"` value, kept as written (`100kHz`).
+pub fn frequency<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+) -> Result<Spanned<&'a str>, Issue<'a>> {
+    let attr = find(node, name).ok_or(missing(name))?;
+    Ok(shown(attr))
+}
+
+/// A `kind="freq"` value, defaulted from the schema when absent.
+pub fn frequency_or<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+    default: &'a str,
+) -> Result<Spanned<&'a str>, Issue<'a>> {
+    text_or(node, name, default)
+}
+
+/// An optional `kind="freq"` value.
+pub fn opt_frequency<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+) -> Result<Option<Spanned<&'a str>>, Issue<'a>> {
+    opt_text(node, name)
+}
+
+/// A required unsigned number.
+pub fn number<'a>(node: &'a ParsedNode<'a>, name: &'static str) -> Result<Spanned<u32>, Issue<'a>> {
+    let attr = find(node, name).ok_or(missing(name))?;
+    number_value(attr, name)
+}
+
+/// A required unsigned number with a schema `range`.
+pub fn number_in<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+    low: u32,
+    high: u32,
+) -> Result<Spanned<u32>, Issue<'a>> {
+    let attr = find(node, name).ok_or(missing(name))?;
+    let value = in_range(attr, name, low, high)?;
+    Ok(Spanned {
+        value,
+        span: span_of(attr),
+    })
+}
+
+/// An unsigned number, defaulted from the schema when absent.
+pub fn number_or<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+    default: u32,
+) -> Result<Spanned<u32>, Issue<'a>> {
+    match find(node, name) {
+        Some(attr) => number_value(attr, name),
+        None => Ok(Spanned {
+            value: default,
+            span: Span::at_node(node),
+        }),
+    }
+}
+
+/// An unsigned number with a schema `range`, defaulted when absent.
+pub fn number_in_or<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+    low: u32,
+    high: u32,
+    default: u32,
+) -> Result<Spanned<u32>, Issue<'a>> {
+    let Some(attr) = find(node, name) else {
+        return Ok(Spanned {
+            value: default,
+            span: Span::at_node(node),
+        });
+    };
+    let value = in_range(attr, name, low, high)?;
+    Ok(Spanned {
+        value,
+        span: span_of(attr),
+    })
+}
+
+fn number_value<'a>(
+    attr: &'a TagAttribute<'a>,
+    name: &'static str,
+) -> Result<Spanned<u32>, Issue<'a>> {
+    Ok(Spanned {
+        value: attr
+            .val
+            .parse::<u32>()
+            .map_err(|_| invalid(name, attr.val))?,
+        span: span_of(attr),
+    })
+}
+
+fn in_range<'a>(
+    attr: &'a TagAttribute<'a>,
+    name: &'static str,
+    low: u32,
+    high: u32,
+) -> Result<u32, Issue<'a>> {
+    let value = attr
+        .val
+        .parse::<u32>()
+        .map_err(|_| invalid(name, attr.val))?;
+    if !(low..=high).contains(&value) {
+        return Err(invalid(name, attr.val));
+    }
+    Ok(value)
+}
+
+/// A required `0x..` or decimal byte.
+pub fn hex<'a>(node: &'a ParsedNode<'a>, name: &'static str) -> Result<Spanned<u8>, Issue<'a>> {
+    let attr = find(node, name).ok_or(missing(name))?;
+    hex_value(attr, name)
+}
+
+/// An optional `0x..` or decimal byte.
+pub fn opt_hex<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+) -> Result<Option<Spanned<u8>>, Issue<'a>> {
+    match find(node, name) {
+        Some(attr) => Ok(Some(hex_value(attr, name)?)),
+        None => Ok(None),
+    }
+}
+
+fn hex_value<'a>(attr: &'a TagAttribute<'a>, name: &'static str) -> Result<Spanned<u8>, Issue<'a>> {
+    let parsed = match attr
+        .val
+        .strip_prefix("0x")
+        .or_else(|| attr.val.strip_prefix("0X"))
+    {
+        Some(hex) => u8::from_str_radix(hex, 16),
+        None => attr.val.parse::<u8>(),
+    };
+    Ok(Spanned {
+        value: parsed.map_err(|_| invalid(name, attr.val))?,
+        span: span_of(attr),
+    })
+}
+
+/// A required `kind="pin_or_ref"` value: a GPIO number, or anything else as a
+/// `<gpio>` reference.
+pub fn pin_or_ref<'a>(
+    node: &'a ParsedNode<'a>,
+    name: &'static str,
+) -> Result<PinOrRef<'a>, Issue<'a>> {
+    let attr = find(node, name).ok_or(missing(name))?;
+    let span = span_of(attr);
+    Ok(match attr.val.parse::<u8>() {
+        Ok(pin) => PinOrRef::Pin(Spanned { value: pin, span }),
+        Err(_) => PinOrRef::Ref(Ref::at(attr.val, span)),
     })
 }
 

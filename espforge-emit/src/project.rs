@@ -31,28 +31,71 @@ pub struct Rendered {
 ///   `{{ board }}`, `{{ serialMonitor }}` and `{{ <component>.pin }}`
 ///   placeholders resolved by [`codegen::overlay`]. They only apply when the
 ///   `wokwi` option emitted the generated versions.
-/// * Everything else (`example.espf.txt`, `app/`, a custom Wokwi chip) is the
-///   CLI's business and ignored here. Custom Wokwi chips return in phase 3.
+/// * `chip.json` and `chip.wasm` are always copied (when `wokwi` is on);
+///   the `chip/` source directory only when `keep-zig-source` is on. An
+///   example without `chip/` makes that a no-op. These are seed-once, so
+///   rebuilding a chip locally is never clobbered.
+///   A seeded chip also appends a `[[chip]]` section (see
+///   [`codegen::wokwi::chip_section`]) to the emitted `wokwi.toml`, whichever
+///   one was emitted: the generated one or the example's own.
+/// * Everything else (`example.espf.txt`, `app/`, ...) is the CLI's business
+///   and ignored here.
 pub fn layer_overlay(
     board: &Board,
     opts: &ResolvedOptions,
     rendered: &mut Rendered,
     overlay: &[OverlayFile],
 ) -> Result<()> {
-    if !opts.is_on("wokwi") {
-        return Ok(());
-    }
+    let artifacts = &mut rendered.artifacts;
+    let assets = &mut rendered.assets;
+    let wokwi = opts.is_on("wokwi");
+    let keep_zig = opts.is_on("keep-zig-source");
+
+    let mut chip_json: Option<&[u8]> = None;
+    let mut have_chip = false;
     for f in overlay {
-        if !matches!(f.path, "diagram.json" | "wokwi.toml") {
-            continue;
-        }
-        if let Some(a) = rendered.artifacts.iter_mut().find(|a| a.path == f.path) {
-            let text = std::str::from_utf8(f.contents)
-                .with_context(|| format!("example `{}` is not valid UTF-8", f.path))?;
-            a.content = codegen::overlay::render(text, f.path, board)?;
+        match f.path {
+            "diagram.json" | "wokwi.toml" => {
+                if !wokwi {
+                    continue;
+                }
+                if let Some(a) = artifacts.iter_mut().find(|a| a.path == f.path) {
+                    let text = std::str::from_utf8(f.contents)
+                        .with_context(|| format!("example `{}` is not valid UTF-8", f.path))?;
+                    a.content = codegen::overlay::render(text, f.path, board)?;
+                }
+            }
+            "chip.json" | "chip.wasm" if wokwi => {
+                have_chip = true;
+                if f.path == "chip.json" {
+                    chip_json = Some(f.contents);
+                }
+                seed(f, artifacts, assets);
+            }
+            p if p.starts_with("chip/") && wokwi && keep_zig => seed(f, artifacts, assets),
+            _ => {}
         }
     }
+
+    // A seeded custom chip needs a `[[chip]]` section in the emitted
+    // `wokwi.toml` so the `chip-<name>` part in diagram.json resolves.
+    if have_chip && let Some(a) = artifacts.iter_mut().find(|a| a.path == "wokwi.toml") {
+        let json = chip_json.and_then(|b| std::str::from_utf8(b).ok());
+        a.content.push_str(&codegen::wokwi::chip_section(json));
+    }
+
     Ok(())
+}
+
+/// Copy an overlay file as seed-once: text becomes an artifact, binary (and
+/// anything `.wasm`) an asset.
+fn seed(f: &OverlayFile, artifacts: &mut Vec<Artifact>, assets: &mut Vec<Asset>) {
+    match std::str::from_utf8(f.contents) {
+        Ok(text) if !f.path.ends_with(".wasm") => {
+            artifacts.push(Artifact::seed_once(f.path, text));
+        }
+        _ => assets.push(Asset::seed_once(f.path, f.contents)),
+    }
 }
 
 /// `README.txt`: says what is machine-owned and what is yours.
@@ -221,6 +264,57 @@ mod tests {
                 .iter()
                 .all(|a| a.path != "example.espf.txt")
         );
+    }
+
+    #[test]
+    fn chip_json_and_wasm_are_always_seeded_but_zig_source_is_optional() {
+        let (board, opts) = components();
+        let overlay = overlay_files(&[
+            ("chip.json", br#"{"name": "chip"}"#),
+            ("chip.wasm", b"\0asm"),
+            ("chip/chip.zig", b"// zig\n"),
+        ]);
+        let rendered = generated(&board, &opts, &overlay);
+        assert!(file(&rendered, "chip.json").content.contains("\"name\""));
+        assert!(rendered.assets.iter().any(|a| a.path == "chip.wasm"));
+        assert!(rendered.artifacts.iter().all(|a| a.path != "chip/chip.zig"));
+
+        let keep = case(
+            "esp32c3",
+            Runtime::Blocking,
+            true,
+            &[("keep-zig-source", "true")],
+            &[],
+        );
+        let rendered = generated(&board, &keep.opts, &overlay);
+        assert!(file(&rendered, "chip/chip.zig").content.contains("zig"));
+    }
+
+    #[test]
+    fn a_seeded_chip_appends_the_chip_section_to_wokwi_toml() {
+        let (board, opts) = components();
+        let overlay = overlay_files(&[
+            ("chip.json", br#"{"name": "mcp23017"}"#),
+            ("chip.wasm", b"\0asm"),
+        ]);
+        let rendered = generated(&board, &opts, &overlay);
+        let wokwi = &file(&rendered, "wokwi.toml").content;
+        assert!(wokwi.contains("[[chip]]"), "{wokwi}");
+        assert!(wokwi.contains("name = 'mcp23017'"), "{wokwi}");
+    }
+
+    #[test]
+    fn an_examples_own_wokwi_toml_gets_the_chip_section_too() {
+        let (board, opts) = components();
+        let overlay = overlay_files(&[
+            ("wokwi.toml", b"[wokwi]\nversion = 1\n"),
+            ("chip.json", br#"{"name": "chip"}"#),
+            ("chip.wasm", b"\0asm"),
+        ]);
+        let rendered = generated(&board, &opts, &overlay);
+        let wokwi = &file(&rendered, "wokwi.toml").content;
+        assert!(wokwi.starts_with("[wokwi]\nversion = 1\n"), "{wokwi}");
+        assert!(wokwi.contains("[[chip]]"), "{wokwi}");
     }
 
     #[test]

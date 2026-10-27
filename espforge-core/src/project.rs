@@ -85,7 +85,8 @@ pub fn write_checked(
 ) -> Result<Written, ProjectError> {
     let runtime = crate::source::runtime_source(runtime_path).map_err(ProjectError::User)?;
     let overlay_owned =
-        crate::source::overlay_files(source).map_err(|e| ProjectError::User(format!("{e}")))?;
+        crate::source::overlay_files(source, checked.resolved.is_on("keep-zig-source"))
+            .map_err(|e| ProjectError::User(format!("{e}")))?;
     let overlay: Vec<OverlayFile> = overlay_owned
         .iter()
         .map(|(path, contents)| OverlayFile { path, contents })

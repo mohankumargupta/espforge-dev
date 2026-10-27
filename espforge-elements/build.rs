@@ -150,6 +150,49 @@ fn field_type(tag: &str, attr: &AttrDef, enums: &mut Vec<String>) -> (String, St
             "Option<Spanned<&'a str>>".to_string(),
             format!("opt_text(node, {lit})?"),
         ),
+        (AttrKind::Freq, true, _) => (
+            "Spanned<&'a str>".to_string(),
+            format!("frequency(node, {lit})?"),
+        ),
+        (AttrKind::Freq, false, Some(default)) => (
+            "Spanned<&'a str>".to_string(),
+            format!("frequency_or(node, {lit}, {default:?})?"),
+        ),
+        (AttrKind::Freq, false, None) => (
+            "Option<Spanned<&'a str>>".to_string(),
+            format!("opt_frequency(node, {lit})?"),
+        ),
+        (AttrKind::U32, true, _) => match attr.range {
+            Some((low, high)) => (
+                "Spanned<u32>".to_string(),
+                format!("number_in(node, {lit}, {low}, {high})?"),
+            ),
+            None => ("Spanned<u32>".to_string(), format!("number(node, {lit})?")),
+        },
+        (AttrKind::U32, false, Some(default)) => {
+            let default: u32 = default
+                .parse()
+                .unwrap_or_else(|_| panic!("`{tag}.{name}` default `{default}` is not a u32"));
+            match attr.range {
+                Some((low, high)) => (
+                    "Spanned<u32>".to_string(),
+                    format!("number_in_or(node, {lit}, {low}, {high}, {default})?"),
+                ),
+                None => (
+                    "Spanned<u32>".to_string(),
+                    format!("number_or(node, {lit}, {default})?"),
+                ),
+            }
+        }
+        (AttrKind::Hex, true, _) => ("Spanned<u8>".to_string(), format!("hex(node, {lit})?")),
+        (AttrKind::Hex, false, None) => (
+            "Option<Spanned<u8>>".to_string(),
+            format!("opt_hex(node, {lit})?"),
+        ),
+        (AttrKind::PinOrRef, true, _) => (
+            "PinOrRef<'a>".to_string(),
+            format!("pin_or_ref(node, {lit})?"),
+        ),
         (AttrKind::Pin, true, _) => ("Spanned<u8>".to_string(), format!("pin(node, {lit})?")),
         (AttrKind::Pin, false, None) => (
             "Option<Spanned<u8>>".to_string(),

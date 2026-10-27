@@ -182,4 +182,9 @@ options {
     option "wokwi" display_name="Generate Wokwi simulation files." default=#true {
         help "Writes diagram.json and wokwi.toml so the project can be simulated in Wokwi."
     }
+
+    // Copy an example's `chip/` Zig sources beside its Wokwi chip.
+    option "keep-zig-source" display_name="Keep the Zig source of custom Wokwi chips." {
+        help "Copies the example's chip/ directory next to chip.json and chip.wasm."
+    }
 }

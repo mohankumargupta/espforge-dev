@@ -158,6 +158,8 @@ pub struct AttrDef {
     pub kind: AttrKind,
     pub required: bool,
     pub default: Option<String>,
+    /// Inclusive bounds for a `kind="u32"` attribute, from `range="0..=3"`.
+    pub range: Option<(u32, u32)>,
     pub help: Option<String>,
     /// Span of the `attr` node in `espf.schema.kdl`.
     pub span: Range<usize>,
@@ -843,6 +845,28 @@ fn parse_attr(node: &KdlNode, attrs: &mut Vec<AttrDef>, errors: &mut Vec<SchemaE
         .into_iter()
         .next()
         .map(|(d, _)| d);
+    let range = match props(node, "range", errors).into_iter().next() {
+        Some((text, span)) => match parse_range(&text) {
+            Some((low, high)) if low <= high => Some((low, high)),
+            Some((low, high)) => {
+                errors.push(err(
+                    span,
+                    format!("range `{low}..={high}` is reversed"),
+                    "write the lower bound first, as in `range=\"0..=3\"`",
+                ));
+                None
+            }
+            None => {
+                errors.push(err(
+                    span,
+                    format!("range `{text}` is not `low..=high`"),
+                    "write two unsigned integers separated by `..=`, as in `range=\"0..=3\"`",
+                ));
+                None
+            }
+        },
+        None => None,
+    };
     let mut choices = Vec::new();
     let mut help = None;
     for child in children(node) {
@@ -876,9 +900,16 @@ fn parse_attr(node: &KdlNode, attrs: &mut Vec<AttrDef>, errors: &mut Vec<SchemaE
         kind,
         required,
         default,
+        range,
         help,
         span,
     });
+}
+
+/// Parse a `range="0..=3"` property into its inclusive bounds.
+fn parse_range(text: &str) -> Option<(u32, u32)> {
+    let (low, high) = text.split_once("..=")?;
+    Some((low.trim().parse().ok()?, high.trim().parse().ok()?))
 }
 
 /// Turn the declared pieces into an `AttrKind`, erroring on shapes that do
@@ -1333,7 +1364,8 @@ options {
                 "embassy",
                 "probe-rs",
                 "stack-smashing-protection",
-                "wokwi"
+                "wokwi",
+                "keep-zig-source"
             ]
         );
         assert_eq!(
@@ -1352,6 +1384,58 @@ options {
         assert_eq!(
             schema.get("probe-rs").unwrap().default,
             Some(OptValue::Bool(false))
+        );
+        assert_eq!(
+            schema.get("keep-zig-source").unwrap().default,
+            Some(OptValue::Bool(false))
+        );
+    }
+
+    /// A schema with one attribute whose `range` the test varies.
+    fn ranged(range: &str) -> String {
+        format!(
+            r##"
+section "peripherals" {{ summary "s"; description "d" }}
+element "spi" section="peripherals" {{
+    summary "SPI"
+    attr "id" kind="ident" required=#true
+    attr "mode" kind="u32" default="0" range="{range}"
+    example "e" #"<spi id="spi2" />"#
+}}
+"##
+        )
+    }
+
+    #[test]
+    fn a_good_range_is_parsed_into_inclusive_bounds() {
+        let schema = load(&ranged("0..=3")).unwrap();
+        let mode = schema
+            .element("spi")
+            .unwrap()
+            .attrs
+            .iter()
+            .find(|a| a.name == "mode")
+            .unwrap();
+        assert_eq!(mode.range, Some((0, 3)));
+    }
+
+    #[test]
+    fn a_reversed_range_is_a_schema_error() {
+        let errors = load(&ranged("3..=0")).unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.message.contains("reversed")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_numeric_range_is_a_schema_error() {
+        let errors = load(&ranged("zero..=three")).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("is not `low..=high`")),
+            "{errors:?}"
         );
     }
 

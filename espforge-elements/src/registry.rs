@@ -157,6 +157,7 @@ mod tests {
             kind,
             required: false,
             default: None,
+            range: None,
             help: None,
             span: 0..0,
         }
