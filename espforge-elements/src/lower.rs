@@ -1152,7 +1152,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::SERVICE_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<ntp_client>` is not a known element in `# services`; known: `<http_client>`, `<https_client>`, `<ws_client>`, `<wss_client>`"
+            "`<ntp_client>` is not a known element in `# services`; known: `<http_client>`, `<https_client>`, `<ws_client>`, `<wss_client>`, `<ntp>`"
         );
     }
 
@@ -1217,6 +1217,88 @@ mod tests {
         assert_eq!(client.rx_buffer_size, 4096);
         assert_eq!(client.timeout_ms, 15000);
         assert!(board.uses_wss());
+    }
+
+    #[test]
+    fn an_ntp_client_lowers_over_the_stations_stack() {
+        let src = with_service("<ntp id=\"clock\" network=\"$home\" />");
+        let board = lower_src_with(&src, embassy_meta()).expect("the ntp client lowers");
+        let Service::Ntp(client) = &board.services[0] else {
+            panic!("the service is an ntp client");
+        };
+        assert_eq!(client.id.raw, "clock");
+        assert_eq!(client.network.raw, "home");
+        assert_eq!(client.server, "pool.ntp.org");
+        assert_eq!(client.port, 123);
+        assert_eq!(client.timeout_ms, 5000);
+        assert!(board.uses_ntp());
+        assert!(!board.uses_http());
+    }
+
+    #[test]
+    fn an_ntp_client_takes_a_custom_server_and_timeout() {
+        let src = with_service(
+            "<ntp id=\"clock\" network=\"$home\" server=\"time.google.com\" port=\"1123\" timeout_ms=\"3000\" />",
+        );
+        let board = lower_src_with(&src, embassy_meta()).expect("the ntp client lowers");
+        let Service::Ntp(client) = &board.services[0] else {
+            panic!("the service is an ntp client");
+        };
+        assert_eq!(client.server, "time.google.com");
+        assert_eq!(client.port, 1123);
+        assert_eq!(client.timeout_ms, 3000);
+    }
+
+    #[test]
+    fn an_ntp_client_requires_the_embassy_runtime() {
+        let src = with_service("<ntp id=\"clock\" network=\"$home\" />");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_REQUIRES_EMBASSY);
+        assert_eq!(errors[0].message, "NTP client requires embassy");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ntp id=\"clock\"> needs the embassy runtime; change <runtime type=\"..\" /> to embassy"
+        );
+    }
+
+    #[test]
+    fn an_ntp_client_network_must_be_a_component_that_has_a_stack() {
+        let src = with_service("<ntp id=\"clock\" network=\"$nope\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_UNKNOWN_NETWORK);
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ntp id=\"clock\"> refers to `nope`, which is not a network component in `# components`"
+        );
+    }
+
+    #[test]
+    fn an_ntp_port_outside_the_udp_range_is_refused() {
+        let src = with_service("<ntp id=\"clock\" network=\"$home\" port=\"0\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_INVALID);
+        assert_eq!(errors[0].message, "invalid ntp port");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ntp id=\"clock\"> port=\"0\" must be in 1..=65535"
+        );
+
+        let src = with_service("<ntp id=\"clock\" network=\"$home\" port=\"65536\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_INVALID);
+        assert_eq!(errors[0].message, "invalid ntp port");
+    }
+
+    #[test]
+    fn an_ntp_server_cannot_be_empty() {
+        let src = with_service("<ntp id=\"clock\" network=\"$home\" server=\"\" />");
+        let errors = lower_src_with(&src, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::SERVICE_INVALID);
+        assert_eq!(errors[0].message, "invalid ntp server");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ntp id=\"clock\"> server=\"\" must name a host or an IP address"
+        );
     }
 
     #[test]

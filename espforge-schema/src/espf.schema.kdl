@@ -277,7 +277,7 @@ section "devices" {
 // ----------------------------------------------------------------- services
 
 section "services" {
-    summary "Software services: http_client, https_client, ws_client, wss_client"
+    summary "Software services: http_client, https_client, ws_client, wss_client, ntp"
     description "Services are software, not hardware: they refer to components or devices, never peripherals."
 }
 
@@ -375,6 +375,28 @@ element "wss_client" section="services" {
     see_also "components/wifi_station"
     see_also "services/ws_client"
     see_also "services/https_client"
+}
+
+element "ntp" section="services" {
+    summary "Async SNTP client for wall-clock time synchronization"
+    description "Queries NTP/SNTPv4 servers (RFC 5905) over an established network interface using sntpc."
+    attr "id" kind="ident" required=#true
+    attr "network" kind="ref" to="wifi_station" required=#true {
+        help "The network interface component providing UDP/IP connectivity."
+    }
+    attr "server" kind="str" default="pool.ntp.org" {
+        help "Host name or IP address of the default NTP server pool."
+    }
+    attr "port" kind="u32" default="123" {
+        help "UDP port number for NTP queries (standard port is 123)."
+    }
+    attr "timeout_ms" kind="u32" default="5000" {
+        help "Timeout in milliseconds for DNS resolution and UDP packet exchange."
+    }
+    example "minimal" #"<ntp id="clock" network="$home" />"#
+    example "custom server and timeout" #"<ntp id="clock" network="$home" server="time.google.com" timeout_ms="3000" />"#
+    see_also "components/wifi_station"
+    see_also "services/http_client"
 }
 
 // ------------------------------------------------------------------- options

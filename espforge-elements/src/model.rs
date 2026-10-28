@@ -548,6 +548,7 @@ service_enum! {
     HttpsClient(crate::services::https_client::HttpsClientService),
     WsClient(crate::services::ws_client::WsClientService),
     WssClient(crate::services::wss_client::WssClientService),
+    Ntp(crate::services::ntp::NtpService),
 }
 
 /// Everything the emitters need: the project settings, the resources it owns,
@@ -590,6 +591,13 @@ impl Board {
         self.services
             .iter()
             .any(|service| matches!(service, Service::WssClient(_)))
+    }
+
+    /// Whether any NTP client service is declared.
+    pub fn uses_ntp(&self) -> bool {
+        self.services
+            .iter()
+            .any(|service| matches!(service, Service::Ntp(_)))
     }
 }
 

@@ -1316,6 +1316,7 @@ dependencies = [
  "esp-radio",
  "log",
  "rand_core 0.6.4",
+ "sntpc",
  "static_cell",
 ]
 
@@ -2197,6 +2198,15 @@ dependencies = [
  "cfg-if",
  "heapless 0.9.3",
  "managed",
+]
+
+[[package]]
+name = "sntpc"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "294278b134cd7d06d7f22eca970aebe38707864c080f66547f9ad26327534af3"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]

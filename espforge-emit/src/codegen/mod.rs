@@ -61,6 +61,7 @@ pub fn generate(
                     https: board.uses_https(),
                     ws: board.uses_ws(),
                     wss: board.uses_wss(),
+                    ntp: board.uses_ntp(),
                 },
             )?,
             Source::CargoConfig => config::cargo_config(opts, &chip)?,

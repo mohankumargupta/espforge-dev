@@ -11,6 +11,7 @@
 
 pub mod http_client;
 pub mod https_client;
+pub mod ntp;
 pub mod ws_client;
 pub mod wss_client;
 

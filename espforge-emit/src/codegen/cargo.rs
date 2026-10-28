@@ -18,10 +18,10 @@ use crate::runtime_source::{RUNTIME_VERSION, RuntimeSource};
 /// The emitted `Cargo.toml`.
 ///
 /// `clients` is what the board's `# services` declared: the HTTP, HTTPS,
-/// WebSocket and secure-WebSocket clients are runtime features, so a project
-/// only names them when it has them. The dependency crates themselves
-/// (`edge-http`, `edge-ws`, `edge-nal-embassy`, `embedded-tls`) stay in the
-/// runtime's own manifest, as the radio stack already does.
+/// WebSocket, secure-WebSocket and NTP clients are runtime features, so a
+/// project only names them when it has them. The dependency crates themselves
+/// (`edge-http`, `edge-ws`, `edge-nal-embassy`, `embedded-tls`, `sntpc`) stay
+/// in the runtime's own manifest, as the radio stack already does.
 pub fn manifest(
     meta: &Meta,
     opts: &ResolvedOptions,
@@ -45,6 +45,7 @@ pub struct Clients {
     pub https: bool,
     pub ws: bool,
     pub wss: bool,
+    pub ntp: bool,
 }
 
 fn package(meta: &Meta, name: &str) -> Item {
@@ -230,11 +231,15 @@ fn runtime_dependency(
     }
     table.insert("version", Value::from(RUNTIME_VERSION));
     let mut features: Vec<&str> = Vec::new();
-    if embassy || wifi || clients.http || clients.https || clients.ws || clients.wss {
+    if embassy || wifi || clients.http || clients.https || clients.ws || clients.wss || clients.ntp
+    {
         features.push("embassy");
     }
     if wifi {
         features.push("wifi");
+    }
+    if clients.ntp {
+        features.push("ntp");
     }
     if clients.wss {
         features.push("wss-client");
@@ -516,6 +521,28 @@ mod tests {
             dependency(&doc, "espforge-runtime"),
             "{ version = \"0.6.0\", features = [\"embassy\", \"wss-client\"] }"
         );
+    }
+
+    /// The SNTP client is a runtime feature as well, and it does not bring
+    /// the HTTP or TLS crates with it.
+    #[test]
+    fn an_ntp_client_asks_the_runtime_for_the_feature() {
+        let doc = parse(&cargo_with(
+            true,
+            &[],
+            Runtime::Embassy,
+            Clients {
+                ntp: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            dependency(&doc, "espforge-runtime"),
+            "{ version = \"0.6.0\", features = [\"embassy\", \"ntp\"] }"
+        );
+        for name in ["sntpc", "edge-http", "edge-ws", "embedded-tls"] {
+            assert!(doc["dependencies"].get(name).is_none(), "{name}");
+        }
     }
 
     fn features(doc: &toml_edit::DocumentMut, dep: &str) -> Vec<String> {

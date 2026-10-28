@@ -65,3 +65,8 @@ mod wss_client;
     feature = "wss-client"
 ))]
 pub use wss_client::*;
+
+#[cfg(all(any(target_arch = "riscv32", target_arch = "xtensa"), feature = "ntp"))]
+mod ntp;
+#[cfg(all(any(target_arch = "riscv32", target_arch = "xtensa"), feature = "ntp"))]
+pub use ntp::*;
