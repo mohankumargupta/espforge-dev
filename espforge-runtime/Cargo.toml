@@ -42,6 +42,12 @@ rand_core = { version = "0.6", default-features = false, optional = true }
 # timestamp source are traits, which `services/ntp.rs` implements over
 # `embassy-net` and `embassy-time`.
 sntpc = { version = "0.11", default-features = false, optional = true }
+# Display drivers (`ssd1306`, `ili9341`). Both are wrapped in `hw/display.rs`
+# behind a `DrawTarget` impl, so app code draws with `embedded-graphics` and
+# never names either driver crate.
+embedded-graphics = { version = "0.8", optional = true }
+ssd1306 = { version = "0.9", default-features = false, features = ["graphics"], optional = true }
+sky-ili9341 = { version = "0.1.1", default-features = false, features = ["graphics"], optional = true }
 
 [features]
 # Selects the async `Delay` (yields via embassy_time) so the same
@@ -88,6 +94,14 @@ wss-client = ["ws-client", "dep:embedded-tls"]
 # The outgoing SNTP client (`NtpClient`). Like the other network services it
 # implies `wifi`: the only network provider today is a station's stack.
 ntp = ["wifi", "dep:sntpc"]
+
+# The I2C SSD1306 OLED display driver (`Ssd1306Display`). Blocking only: the
+# display takes the bus component by value and draws synchronously.
+ssd1306 = ["dep:ssd1306", "dep:embedded-graphics"]
+
+# The SPI ILI9341 color TFT driver (`Ili9341Display`). Blocking only, for the
+# same reason.
+ili9341 = ["dep:sky-ili9341", "dep:embedded-graphics"]
 
 # esp-hal only builds for esp targets, so keep it invisible to host builds.
 # The generated project supplies the chip feature.

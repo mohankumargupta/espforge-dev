@@ -45,7 +45,7 @@ pub fn generate(board: &Board, meta: &Meta, opts: &ResolvedOptions) -> Result<Ve
         },
         Artifact {
             path: "src/lib.rs".into(),
-            content: lib(meta)?,
+            content: lib(meta, !board.devices.is_empty())?,
             ownership: Ownership::Owned,
         },
     ])
@@ -60,8 +60,37 @@ fn generated(parts: &EmitParts, _meta: &Meta) -> Result<String> {
     let fields = &parts.fields;
     let inits = &parts.inits;
     let prelude = &parts.prelude;
+    let device_fields = &parts.device_fields;
+    let device_inits = &parts.device_inits;
     let service_fields = &parts.service_fields;
     let service_inits = &parts.service_inits;
+
+    // `Devices` is byte-identical to the styles that predate devices (the
+    // helloworld `Devices {}` with no `new`) when nothing is declared.
+    let devices = if device_fields.is_empty() {
+        quote::quote! {
+            #[doc = " Constructed devices (none yet)."]
+            pub struct Devices {}
+        }
+    } else {
+        quote::quote! {
+            #[doc = " Constructed devices."]
+            pub struct Devices {
+                #(#device_fields)*
+            }
+
+            impl Devices {
+                pub fn new(
+                    registry: &mut PeripheralRegistry,
+                    components: &mut Components,
+                ) -> Self {
+                    Self {
+                        #(#device_inits)*
+                    }
+                }
+            }
+        }
+    };
 
     // `Services` is byte-identical to the styles that predate services (the
     // helloworld `Services {}` with no `new`) when nothing is declared, so
@@ -117,8 +146,7 @@ fn generated(parts: &EmitParts, _meta: &Meta) -> Result<String> {
             }
         }
 
-        #[doc = " Constructed devices (none yet)."]
-        pub struct Devices {}
+        #devices
 
         #services
     };
@@ -145,6 +173,9 @@ fn collect(board: &Board) -> EmitParts {
     for component in &board.components {
         component.emit(board, &mut cx);
     }
+    for device in &board.devices {
+        device.emit(board, &mut cx);
+    }
     for service in &board.services {
         service.emit(board, &mut cx);
     }
@@ -167,7 +198,15 @@ fn safety_comments(safety: &[(String, Vec<String>)]) -> Vec<Comment> {
         .collect()
 }
 
-fn lib(meta: &Meta) -> Result<String> {
+fn lib(meta: &Meta, has_devices: bool) -> Result<String> {
+    // A device is a draw target: drawing needs `&mut`, so with devices the
+    // macro hands one out. A project without devices keeps the `&` spelling it
+    // has always had (the helloworld golden depends on it byte for byte).
+    let device_borrow = if has_devices {
+        quote::quote! { &mut }
+    } else {
+        quote::quote! { & }
+    };
     let signal = if meta.runtime == Runtime::Embassy {
         quote::quote! {
             #[doc = " Define a cross-task signal. Usage: `crate::signal!(BUTTON_PRESSED)`"]
@@ -205,7 +244,7 @@ fn lib(meta: &Meta) -> Result<String> {
         #[macro_export]
         macro_rules! device {
             ($ctx:expr, $name:ident) => {
-                &$ctx.devices.$name
+                #device_borrow $ctx.devices.$name
             };
         }
 
@@ -272,6 +311,21 @@ fn main(board: &Board, parts: &EmitParts, meta: &Meta, opts: &ResolvedOptions) -
     let heap = heap_line(board, opts);
     let startup = &parts.startup;
 
+    // The empty `Devices {}` keeps the helloworld golden byte-identical; a
+    // declared device gets the constructor that takes its bus from
+    // `Components`.
+    let (devices, components_mut) = if parts.device_fields.is_empty() {
+        (
+            quote::quote! { let devices = Devices {}; },
+            quote::quote! {},
+        )
+    } else {
+        (
+            quote::quote! { let devices = Devices::new(&mut registry, &mut components); },
+            quote::quote! { mut },
+        )
+    };
+
     // `Services {}` without a `new` when nothing is declared keeps the
     // helloworld golden byte-identical; a declared service gets the
     // `Services::new(&components)` constructor instead.
@@ -302,8 +356,8 @@ fn main(board: &Board, parts: &EmitParts, meta: &Meta, opts: &ResolvedOptions) -
                 let logger = espforge_runtime::Logger::new();
                 let delay = espforge_runtime::Delay::new();
 
-                let components = Components::new(&mut registry);
-                let devices = Devices {};
+                let #components_mut components = Components::new(&mut registry);
+                #devices
                 #services
 
                 let ctx = Context { logger, delay, components, devices, services };
@@ -334,8 +388,8 @@ fn main(board: &Board, parts: &EmitParts, meta: &Meta, opts: &ResolvedOptions) -
                 #[allow(unused_mut)]
                 let mut registry = PeripheralRegistry::new(peripherals);
 
-                let components = Components::new(&mut registry);
-                let devices = Devices {};
+                let #components_mut components = Components::new(&mut registry);
+                #devices
 
                 let timg0 = TimerGroup::new(registry.peripherals.TIMG0);
                 esp_rtos::start(timg0.timer0, registry.peripherals.FROM_CPU_INTR0);
@@ -365,7 +419,7 @@ fn main(board: &Board, parts: &EmitParts, meta: &Meta, opts: &ResolvedOptions) -
         ],
     );
     let mut notes = vec![Comment::new(
-        "let components = Components::new(",
+        "components = Components::new(",
         "Built first: it borrows the whole registry, which the moves below break.",
     )];
     if meta.runtime == Runtime::Embassy {
@@ -553,6 +607,8 @@ mod tests {
     use super::*;
     use crate::codegen::test_support::case;
     use espforge_elements::components::recipe::RecipeComponent;
+    use espforge_elements::devices::Rotation;
+    use espforge_elements::devices::ssd1306::{OledSize, Ssd1306Device};
     use espforge_elements::{Component, Ident, Owner, OwnerKind, Pin, PinUse, ResourceGraph};
 
     /// `blink`: one LED on GPIO18.
@@ -562,6 +618,7 @@ mod tests {
             meta: case.meta.clone(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             warnings: Vec::new(),
         };
@@ -605,6 +662,45 @@ mod tests {
         assert!(text.contains("false,"), "{text}");
     }
 
+    /// A declared display fills `Devices`, gets a constructor that takes its
+    /// bus out of `Components`, and flips `components` to `mut` in `main`.
+    #[test]
+    fn a_display_fills_the_devices_struct() {
+        let case = case("esp32c3", Runtime::Blocking, true, &[], &[]);
+        let mut board = empty_board(&case);
+        board
+            .devices
+            .push(espforge_elements::Device::Ssd1306(Ssd1306Device {
+                id: Ident::new("oled", 0..0),
+                i2c_component: Ident::new("oled_bus", 0..0),
+                size: OledSize::S128x64,
+                rotation: Rotation::R0,
+            }));
+        let parts = collect(&board);
+        let text = generated(&parts, &case.meta).unwrap();
+        assert!(
+            text.contains(
+                "pub oled: espforge_runtime::Ssd1306Display<espforge_runtime::Oled128x64>,"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("components.oled_bus"), "{text}");
+        assert!(text.contains("impl Devices"), "{text}");
+
+        let boot = main(&board, &parts, &case.meta, &case.opts).unwrap();
+        assert!(
+            boot.contains("let mut components = Components::new("),
+            "{boot}"
+        );
+        assert!(
+            boot.contains("let devices = Devices::new(&mut registry, &mut components);"),
+            "{boot}"
+        );
+        // Drawing needs `&mut`, so the accessor hands one out.
+        let lib = lib(&case.meta, true).unwrap();
+        assert!(lib.contains("& mut $ctx .devices"), "{lib}");
+    }
+
     #[test]
     fn a_component_free_board_still_prints_empty_structs() {
         let case = case("esp32c3", Runtime::Blocking, true, &[], &[]);
@@ -612,6 +708,7 @@ mod tests {
             meta: case.meta.clone(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             warnings: Vec::new(),
         };
@@ -627,6 +724,7 @@ mod tests {
             meta: case.meta.clone(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             warnings: Vec::new(),
         }

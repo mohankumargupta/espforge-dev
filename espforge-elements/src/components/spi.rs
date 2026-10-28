@@ -201,11 +201,11 @@ impl Lowered for SpiComponent {
         let cs_pin = self.cs.pin().0;
         let cs = gpio(cs_pin);
         let runtime = runtime_type(board.meta.runtime);
-        cx.field(quote! {
-            pub #name: espforge_runtime::SpiDevice<#runtime>,
-        });
-        cx.init(quote! {
-            #name: espforge_runtime::SpiDevice::new(
+        // A display device owns the SPI device of the bus it sits on, so the
+        // component's field is an `Option` that `Devices::new` takes. Without
+        // a device the field is plain, as it has always been.
+        let value = quote! {
+            espforge_runtime::SpiDevice::new(
                 #handle,
                 esp_hal::gpio::Output::new(
                     #cs,
@@ -213,10 +213,31 @@ impl Lowered for SpiComponent {
                     esp_hal::gpio::OutputConfig::default(),
                 ),
                 espforge_runtime::Delay::new(),
-            ),
-        });
+            )
+        };
+        if board.takes_spi_component(&self.id) {
+            cx.field(quote! {
+                pub #name: Option<espforge_runtime::SpiDevice<#runtime>>,
+            });
+            cx.init(quote! {
+                #name: Some(#value),
+            });
+        } else {
+            cx.field(quote! {
+                pub #name: espforge_runtime::SpiDevice<#runtime>,
+            });
+            cx.init(quote! {
+                #name: #value,
+            });
+        }
+        // A consumed bus wraps the same constructor in `Some(..)`.
+        let anchor = if board.takes_spi_component(&self.id) {
+            format!("{name}: Some(")
+        } else {
+            format!("{name}: espforge_runtime::SpiDevice::new(")
+        };
         cx.safety_block(
-            format!("{name}: espforge_runtime::SpiDevice::new("),
+            anchor,
             &[
                 &format!("SAFETY: espforge checked that no other component uses GPIO{cs_pin}."),
                 "Chip-select idles high (deasserted).",
@@ -241,6 +262,7 @@ mod tests {
             },
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             warnings: Vec::new(),
         }

@@ -49,6 +49,13 @@ mod hw {
     pub use spi::*;
     pub use uart::*;
 
+    /// Display drivers ([`Ssd1306Display`], [`Ili9341Display`]), each behind
+    /// its own feature: a project with no display never compiles one.
+    #[cfg(any(feature = "ssd1306", feature = "ili9341"))]
+    mod display;
+    #[cfg(any(feature = "ssd1306", feature = "ili9341"))]
+    pub use display::*;
+
     /// The Wi-Fi station driver ([`Wifi`], [`WifiConfig`], [`WifiError`]),
     /// behind the `wifi` feature: a project with no radio never compiles it.
     #[cfg(feature = "wifi")]

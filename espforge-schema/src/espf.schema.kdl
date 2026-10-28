@@ -274,6 +274,55 @@ section "devices" {
     description "A device is a driver for a specific part. It refers to the component it is attached to, for example i2c_component=\"$temp_bus\"."
 }
 
+element "ssd1306" section="devices" {
+    summary "SSD1306 monochrome OLED display (0.96\" / 1.3\")"
+    description "Drives an I2C SSD1306 OLED panel in buffered graphics mode. Blocking runtime only."
+    attr "id" kind="ident" required=#true
+    attr "i2c_component" kind="ref" to="i2c_component" required=#true {
+        help "The I2C bus component this display is connected to."
+    }
+    attr "size" kind="choice" default="128x64" {
+        choices "128x64" "128x32"
+        help "Pixel dimensions of the OLED panel."
+    }
+    attr "rotation" kind="choice" default="0" {
+        choices "0" "90" "180" "270"
+        help "Display rotation in degrees clockwise."
+    }
+    example "minimal" #"<ssd1306 id="oled" i2c_component="$display_bus" />"#
+    example "custom size and rotation" #"<ssd1306 id="oled" i2c_component="$display_bus" size="128x32" rotation="180" />"#
+    see_also "components/i2c_component"
+}
+
+element "ili9341" section="devices" {
+    summary "ILI9341 240x320 RGB565 color TFT LCD display"
+    description "Drives an SPI ILI9341 TFT display on a <spi_component> bus, with its data/command, reset and optional backlight pins. Blocking runtime only."
+    attr "id" kind="ident" required=#true
+    attr "spi_component" kind="ref" to="spi_component" required=#true {
+        help "The SPI device component providing SCLK, MOSI and CS."
+    }
+    attr "dc" kind="ref" to="gpio" required=#true {
+        help "GPIO pin for Data/Command selection."
+    }
+    attr "reset" kind="ref" to="gpio" required=#true {
+        help "GPIO pin for hardware reset (the driver pulses it during init)."
+    }
+    attr "backlight" kind="ref" to="gpio" {
+        help "Optional GPIO pin to enable the display backlight (driven HIGH on init)."
+    }
+    attr "rotation" kind="choice" default="0" {
+        choices "0" "90" "180" "270"
+        help "Display orientation in degrees clockwise."
+    }
+    attr "rgb" kind="bool" default="false" {
+        help "When true, uses RGB color order instead of BGR."
+    }
+    example "minimal" #"<ili9341 id="tft" spi_component="$display_bus" dc="$gpio4" reset="$gpio5" />"#
+    example "with reset and backlight" #"<ili9341 id="tft" spi_component="$display_bus" dc="$gpio4" reset="$gpio5" backlight="$gpio6" rotation="90" />"#
+    see_also "components/spi_component"
+    see_also "peripherals/gpio"
+}
+
 // ----------------------------------------------------------------- services
 
 section "services" {

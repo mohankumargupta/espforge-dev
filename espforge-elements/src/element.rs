@@ -17,8 +17,8 @@ use proc_macro2::TokenStream;
 use quote::format_ident;
 
 use crate::model::{
-    Board, Bus, BusId, ClaimedPin, Component, Conflict, ConflictKind, GpioDecl, Ident, Meta, Owner,
-    PeripheralClash, Pin, PinUse, ResourceGraph, Service,
+    Board, Bus, BusId, ClaimedPin, Component, Conflict, ConflictKind, Device, GpioDecl, Ident,
+    Meta, Owner, PeripheralClash, Pin, PinUse, ResourceGraph, Service,
 };
 
 /// One element tag: reads its node and lowers it onto the board.
@@ -64,6 +64,7 @@ pub struct LowerCx {
     gpios: Vec<GpioDecl>,
     resources: ResourceGraph,
     components: Vec<Component>,
+    devices: Vec<Device>,
     services: Vec<Service>,
     /// `<gpio>` ids named by an `<spi_component cs>` reference: a chip select
     /// that names its own declaration is not a second user of that pin.
@@ -93,6 +94,7 @@ impl LowerCx {
             gpios: Vec::new(),
             resources: ResourceGraph::default(),
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             cs_gpios: Vec::new(),
             radios: Vec::new(),
@@ -268,6 +270,16 @@ impl LowerCx {
         self.components.push(component);
     }
 
+    /// Record a lowered device.
+    pub fn push_device(&mut self, device: Device) {
+        self.devices.push(device);
+    }
+
+    /// Every lowered device, in source order.
+    pub fn devices(&self) -> &[Device] {
+        &self.devices
+    }
+
     /// Record a lowered service.
     pub fn push_service(&mut self, service: Service) {
         self.services.push(service);
@@ -295,6 +307,7 @@ impl LowerCx {
                 meta,
                 resources: self.resources,
                 components: self.components,
+                devices: self.devices,
                 services: self.services,
                 warnings: self.warnings,
             })
@@ -334,6 +347,8 @@ pub struct EmitCx {
     prelude: Vec<TokenStream>,
     once: std::collections::BTreeSet<String>,
     safety: Vec<(String, Vec<String>)>,
+    device_fields: Vec<TokenStream>,
+    device_inits: Vec<TokenStream>,
     service_fields: Vec<TokenStream>,
     service_inits: Vec<TokenStream>,
     startup: Vec<TokenStream>,
@@ -348,6 +363,10 @@ pub struct EmitParts {
     pub prelude: Vec<TokenStream>,
     /// `(anchor, lines)` pairs for the emit crate to turn into comment blocks.
     pub safety: Vec<(String, Vec<String>)>,
+    /// One field of the generated `Devices` struct.
+    pub device_fields: Vec<TokenStream>,
+    /// One initialiser inside `Devices::new`.
+    pub device_inits: Vec<TokenStream>,
     /// One field of the generated `Services` struct.
     pub service_fields: Vec<TokenStream>,
     /// One initialiser inside `Services::new`.
@@ -372,6 +391,16 @@ impl EmitCx {
     /// The locals a startup statement names.
     pub fn main(&self) -> &MainCtx {
         &self.main
+    }
+
+    /// One field of the generated `Devices` struct.
+    pub fn device_field(&mut self, field: TokenStream) {
+        self.device_fields.push(field);
+    }
+
+    /// One initialiser inside `Devices::new`.
+    pub fn device_init(&mut self, init: TokenStream) {
+        self.device_inits.push(init);
     }
 
     /// One field of the generated `Services` struct.
@@ -433,6 +462,8 @@ impl EmitCx {
             inits: self.inits,
             prelude: self.prelude,
             safety: self.safety,
+            device_fields: self.device_fields,
+            device_inits: self.device_inits,
             service_fields: self.service_fields,
             service_inits: self.service_inits,
             startup: self.startup,

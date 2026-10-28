@@ -1302,7 +1302,7 @@ options {
         ] {
             assert!(schema.section_named(section).is_some(), "{section}");
         }
-        assert_eq!(schema.elements.len(), 21);
+        assert_eq!(schema.elements.len(), 23);
         for tag in [
             "project",
             "chip",
@@ -1325,14 +1325,16 @@ options {
             "ws_client",
             "wss_client",
             "ntp",
+            "ssd1306",
+            "ili9341",
         ] {
             assert!(schema.element(tag).is_some(), "{tag}");
         }
-        // Five peripherals, six components and the five network services;
-        // devices are still empty.
+        // Five peripherals, six components, two displays and the five
+        // network services.
         assert_eq!(schema.elements_in("peripherals").count(), 5);
         assert_eq!(schema.elements_in("components").count(), 6);
-        assert_eq!(schema.elements_in("devices").count(), 0);
+        assert_eq!(schema.elements_in("devices").count(), 2);
         assert_eq!(schema.elements_in("services").count(), 5);
 
         let gpio = schema.element("gpio").unwrap();

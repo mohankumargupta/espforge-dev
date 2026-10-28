@@ -63,6 +63,10 @@ pub fn generate(
                     wss: board.uses_wss(),
                     ntp: board.uses_ntp(),
                 },
+                cargo::Displays {
+                    ssd1306: board.uses_ssd1306(),
+                    ili9341: board.uses_ili9341(),
+                },
             )?,
             Source::CargoConfig => config::cargo_config(opts, &chip)?,
             Source::EspConfig => config::esp_config().to_string(),
@@ -100,6 +104,7 @@ mod tests {
             meta: meta.clone(),
             resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             warnings: Vec::new(),
         };

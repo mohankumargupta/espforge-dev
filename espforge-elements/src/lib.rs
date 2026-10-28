@@ -10,6 +10,7 @@ pub mod attrs;
 pub mod chips;
 pub mod components;
 pub mod core;
+pub mod devices;
 pub mod element;
 pub mod lower;
 pub mod peripherals;
@@ -32,8 +33,8 @@ pub use element::{Element, EmitCx, LowerCx, Lowered, MainCtx, Reported};
 pub use espforge_schema::{Compat, Kind, OptValue, OptionDef, Requires, Schema};
 pub use lower::lower;
 pub use model::{
-    Board, Claim, ClaimedPin, Component, Conflict, ConflictKind, Console, Direction, GpioDecl,
-    Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime, Service,
+    Board, Claim, ClaimedPin, Component, Conflict, ConflictKind, Console, Device, Direction,
+    GpioDecl, Ident, Meta, Owner, OwnerKind, Pin, PinUse, ResourceGraph, Runtime, Service,
 };
 pub use options::{
     Answer, Answers, DerivedInputs, Origin, Resolved, ResolvedOptions, Why, resolve, resolve_with,

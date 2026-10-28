@@ -136,6 +136,9 @@ pub enum OwnerKind {
     I2cComponent,
     SpiComponent,
     UartComponent,
+    /// A device driving its auxiliary pins (`<ili9341>`); carries its schema
+    /// tag.
+    Device(&'static str),
     /// The on-chip Wi-Fi radio (`<wifi>`), which claims the `WIFI` block.
     Wifi,
 }
@@ -152,6 +155,7 @@ impl OwnerKind {
             OwnerKind::I2cComponent => "i2c_component",
             OwnerKind::SpiComponent => "spi_component",
             OwnerKind::UartComponent => "uart_component",
+            OwnerKind::Device(tag) => tag,
             OwnerKind::Wifi => "wifi",
         }
     }
@@ -551,13 +555,54 @@ service_enum! {
     Ntp(crate::services::ntp::NtpService),
 }
 
+/// One line per device variant generates [`Device::id`] and the
+/// [`Lowered`](crate::Lowered) forwarding, so a new device is its own file
+/// plus its own line here — the same shape as `component_enum!`.
+macro_rules! device_enum {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        /// A device in the board: a driver for a specific part, bound to a
+        /// component and (for auxiliary lines) to `<gpio>` peripherals.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum Device {
+            $($variant($ty)),*
+        }
+
+        impl Device {
+            /// The device's id.
+            pub fn id(&self) -> &Ident {
+                match self {
+                    $(Device::$variant(d) => crate::element::Lowered::id(d),)*
+                }
+            }
+        }
+
+        impl crate::element::Lowered for Device {
+            fn id(&self) -> &Ident {
+                self.id()
+            }
+
+            fn emit(&self, board: &Board, cx: &mut crate::element::EmitCx) {
+                match self {
+                    $(Device::$variant(d) => d.emit(board, cx),)*
+                }
+            }
+        }
+    };
+}
+
+device_enum! {
+    Ssd1306(crate::devices::ssd1306::Ssd1306Device),
+    Ili9341(crate::devices::ili9341::Ili9341Device),
+}
+
 /// Everything the emitters need: the project settings, the resources it owns,
-/// the components on them and the services over them.
+/// the components on them, the devices over those and the services.
 #[derive(Debug, Clone)]
 pub struct Board {
     pub meta: Meta,
     pub resources: ResourceGraph,
     pub components: Vec<Component>,
+    pub devices: Vec<Device>,
     pub services: Vec<Service>,
     /// Warnings collected while lowering. Warnings never stop the build, so
     /// they ride on the board rather than in the error list.
@@ -598,6 +643,32 @@ impl Board {
         self.services
             .iter()
             .any(|service| matches!(service, Service::Ntp(_)))
+    }
+
+    /// Whether an SSD1306 OLED display is declared.
+    pub fn uses_ssd1306(&self) -> bool {
+        self.devices
+            .iter()
+            .any(|device| matches!(device, Device::Ssd1306(_)))
+    }
+
+    /// Whether an ILI9341 TFT display is declared.
+    pub fn uses_ili9341(&self) -> bool {
+        self.devices
+            .iter()
+            .any(|device| matches!(device, Device::Ili9341(_)))
+    }
+
+    /// Whether an `<ili9341>` took this `<spi_component>` over: the display
+    /// owns its SPI device, so the component's `Components` field is an
+    /// `Option` the device takes at construction.
+    pub fn takes_spi_component(&self, id: &Ident) -> bool {
+        self.devices.iter().any(|device| match device {
+            // The ids are the same text from different nodes, so their spans
+            // differ: compare the spelling, not the span.
+            Device::Ili9341(tft) => tft.spi_component.raw == id.raw,
+            Device::Ssd1306(_) => false,
+        })
     }
 }
 
@@ -764,6 +835,7 @@ mod tests {
             meta: meta("blink"),
             resources,
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             warnings: Vec::new(),
         };

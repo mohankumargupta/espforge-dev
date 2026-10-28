@@ -28,12 +28,13 @@ pub fn manifest(
     runtime: &RuntimeSource,
     chip: &Chip,
     clients: Clients,
+    displays: Displays,
 ) -> Result<String> {
     let name = meta.crate_name();
     let mut doc = DocumentMut::new();
     doc["package"] = package(meta, &name);
     doc["bin"] = Item::ArrayOfTables(bin(&name));
-    doc["dependencies"] = dependencies(meta, opts, runtime, chip, clients);
+    doc["dependencies"] = dependencies(meta, opts, runtime, chip, clients, displays);
     doc["profile"] = profiles();
     Ok(doc.to_string())
 }
@@ -46,6 +47,15 @@ pub struct Clients {
     pub ws: bool,
     pub wss: bool,
     pub ntp: bool,
+}
+
+/// The display devices the board declares. The drivers themselves live in the
+/// runtime behind a feature; `embedded-graphics` is what app code draws with,
+/// so the project names it directly.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Displays {
+    pub ssd1306: bool,
+    pub ili9341: bool,
 }
 
 fn package(meta: &Meta, name: &str) -> Item {
@@ -75,6 +85,7 @@ fn dependencies(
     runtime: &RuntimeSource,
     chip: &Chip,
     clients: Clients,
+    displays: Displays,
 ) -> Item {
     let embassy = meta.runtime == Runtime::Embassy;
     let alloc = opts.is_on("alloc");
@@ -85,7 +96,9 @@ fn dependencies(
     let chip_name = chip.name.as_str();
 
     let mut deps = Table::new();
-    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy, wifi, clients));
+    deps["espforge-runtime"] = Item::Value(runtime_dependency(
+        runtime, embassy, wifi, clients, displays,
+    ));
     deps["static_cell"] = value("2.1.1");
     deps["critical-section"] = value("1.2.0");
     deps["log"] = value("0.4.27");
@@ -174,6 +187,12 @@ fn dependencies(
         deps["embassy-time"] = Item::Value(dep("0.5.0", &["log"]));
         deps["embassy-sync"] = value("0.8.0");
     }
+
+    // A display is drawn on with `embedded-graphics` from `app.rs`; the driver
+    // crate itself is a runtime feature, so it is not named here.
+    if displays.ssd1306 || displays.ili9341 {
+        deps["embedded-graphics"] = value("0.8.1");
+    }
     Item::Table(deps)
 }
 
@@ -224,6 +243,7 @@ fn runtime_dependency(
     embassy: bool,
     wifi: bool,
     clients: Clients,
+    displays: Displays,
 ) -> Value {
     let mut table = InlineTable::new();
     if let RuntimeSource::Path(path) = source {
@@ -237,6 +257,12 @@ fn runtime_dependency(
     }
     if wifi {
         features.push("wifi");
+    }
+    if displays.ssd1306 {
+        features.push("ssd1306");
+    }
+    if displays.ili9341 {
+        features.push("ili9341");
     }
     if clients.ntp {
         features.push("ntp");
@@ -311,6 +337,7 @@ mod tests {
             &RuntimeSource::Published,
             &chip("esp32c3"),
             clients,
+            Displays::default(),
         )
         .unwrap()
     }
@@ -397,6 +424,7 @@ mod tests {
                 &RuntimeSource::Published,
                 &chip("esp32c3"),
                 Clients::default(),
+                Displays::default(),
             )
             .unwrap(),
         );
@@ -416,6 +444,7 @@ mod tests {
                 &RuntimeSource::Path("..\\rt".into()),
                 &chip("esp32s3"),
                 Clients::default(),
+                Displays::default(),
             )
             .unwrap(),
         );
@@ -543,6 +572,50 @@ mod tests {
         for name in ["sntpc", "edge-http", "edge-ws", "embedded-tls"] {
             assert!(doc["dependencies"].get(name).is_none(), "{name}");
         }
+    }
+
+    /// A display is a runtime feature plus `embedded-graphics` in the project;
+    /// neither driver crate is named by the project itself.
+    #[test]
+    fn a_display_asks_the_runtime_for_its_feature() {
+        let case = case("esp32c3", Runtime::Blocking, true, &[], &[]);
+        for (displays, expected) in [
+            (
+                Displays {
+                    ssd1306: true,
+                    ili9341: false,
+                },
+                "{ version = \"0.6.0\", features = [\"ssd1306\"] }",
+            ),
+            (
+                Displays {
+                    ssd1306: false,
+                    ili9341: true,
+                },
+                "{ version = \"0.6.0\", features = [\"ili9341\"] }",
+            ),
+        ] {
+            let doc = parse(
+                &manifest(
+                    &case.meta,
+                    &case.opts,
+                    &RuntimeSource::Published,
+                    &chip("esp32c3"),
+                    Clients::default(),
+                    displays,
+                )
+                .unwrap(),
+            );
+            assert_eq!(dependency(&doc, "espforge-runtime"), expected);
+            assert_eq!(dependency(&doc, "embedded-graphics"), "\"0.8.1\"");
+            for name in ["ssd1306", "display-interface", "sky-ili9341"] {
+                assert!(doc["dependencies"].get(name).is_none(), "{name}");
+            }
+        }
+
+        // A project with no display names neither.
+        let doc = parse(&cargo(true, &[], Runtime::Blocking));
+        assert!(doc["dependencies"].get("embedded-graphics").is_none());
     }
 
     fn features(doc: &toml_edit::DocumentMut, dep: &str) -> Vec<String> {

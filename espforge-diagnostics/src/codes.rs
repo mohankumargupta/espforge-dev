@@ -177,6 +177,21 @@ codes! {
     SERVICE_INVALID = "E0805";
     /// A service tag no element implements.
     SERVICE_UNSUPPORTED = "E0806";
+
+    /// A device's bus reference to a component that does not exist.
+    DEVICE_UNKNOWN_COMPONENT = "E0901";
+    /// A device's auxiliary pin reference to a `<gpio>` that does not exist.
+    DEVICE_UNKNOWN_GPIO = "E0902";
+    /// A device's auxiliary pin on a GPIO declared as an input.
+    DEVICE_WRONG_DIRECTION = "E0903";
+    /// A device id that cannot become a Rust identifier.
+    DEVICE_INVALID_ID = "E0904";
+    /// A device tag no element implements.
+    DEVICE_UNSUPPORTED = "E0905";
+    /// A blocking-only display declared under the embassy runtime.
+    DEVICE_REQUIRES_BLOCKING = "E0906";
+    /// A device that cannot be built: a missing or invalid attribute.
+    DEVICE_INVALID = "E0907";
 }
 
 #[cfg(test)]
@@ -230,6 +245,7 @@ mod tests {
                         | 601..=622
                         | 701..=707
                         | 801..=806
+                        | 901..=907
                 ),
                 "{} is outside the codes this slice defines",
                 code.as_str()

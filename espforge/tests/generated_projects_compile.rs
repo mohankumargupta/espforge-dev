@@ -177,6 +177,18 @@ const CASES: &[Case] = &[
         runtime: Runtime::Embassy,
         inline: None,
     },
+    Case {
+        example: "06.Displays/ssd1306",
+        chip: "esp32c3",
+        runtime: Runtime::Blocking,
+        inline: None,
+    },
+    Case {
+        example: "06.Displays/ili9341",
+        chip: "esp32c3",
+        runtime: Runtime::Blocking,
+        inline: None,
+    },
 ];
 
 #[test]

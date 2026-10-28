@@ -116,6 +116,7 @@ mod tests {
             },
             resources: espforge_elements::ResourceGraph::default(),
             components: Vec::new(),
+            devices: Vec::new(),
             services: Vec::new(),
             warnings: Vec::new(),
         }

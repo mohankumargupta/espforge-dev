@@ -104,6 +104,7 @@ pub fn validate<'a>(src: &'a str, overrides: &Overrides) -> Result<Checked<'a>, 
         meta.clone(),
         &parsed.sections["peripherals"],
         &parsed.sections["components"],
+        &parsed.sections["devices"],
         &parsed.sections["services"],
     )?;
 

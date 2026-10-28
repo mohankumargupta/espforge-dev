@@ -1,5 +1,6 @@
-//! Lowering: walk `# peripherals` then `# components`, find the registered
-//! element for each tag, and build the board.
+//! Lowering: walk `# peripherals`, `# components`, `# devices` and
+//! `# services` in rank order, find the registered element for each tag, and
+//! build the board.
 //!
 //! An unknown tag is reported from the schema ∩ registry, so the "known"
 //! list in the message cannot drift from what actually exists.
@@ -17,13 +18,14 @@ use crate::registry;
 ///
 /// Diagnostics are collected and returned together; a `Board` exists only when
 /// there are none. A bus pin on a declared `<gpio>` stops the walk before the
-/// components, in the legacy order the diagnostics corpus pins. Services come
-/// last: they refer down to components, so lowering them over a failed
-/// component pass would only report the same missing reference twice.
+/// components, in the legacy order the diagnostics corpus pins. Devices are
+/// lowered after the components they bind to, and services last: a pass over
+/// a failed one below it would only report the same missing reference twice.
 pub fn lower(
     meta: Meta,
     peripherals: &[ParsedNode<'_>],
     components: &[ParsedNode<'_>],
+    devices: &[ParsedNode<'_>],
     services: &[ParsedNode<'_>],
 ) -> Result<Board, Vec<Diagnostic>> {
     let mut cx = LowerCx::new();
@@ -40,6 +42,13 @@ pub fn lower(
     }
     lower_section("components", components, &mut cx);
     check_spi_cs_gpio_declarations(&mut cx);
+    if cx.has_errors() {
+        return cx.into_board(meta);
+    }
+    // Devices bind down to components, so they are lowered after them. A
+    // failed component pass stops here too: every device would report the
+    // same missing reference.
+    lower_section("devices", devices, &mut cx);
     if cx.has_errors() {
         return cx.into_board(meta);
     }
@@ -145,6 +154,7 @@ fn lower_section(section: &str, nodes: &[ParsedNode<'_>], cx: &mut LowerCx) {
                 };
                 let code = match section {
                     "peripherals" => codes::PERIPHERAL_UNSUPPORTED,
+                    "devices" => codes::DEVICE_UNSUPPORTED,
                     "services" => codes::SERVICE_UNSUPPORTED,
                     _ => codes::COMPONENT_UNSUPPORTED,
                 };
@@ -188,7 +198,9 @@ fn known_tags(section: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::element::Lowered;
-    use crate::model::{Component, Console, Direction, OwnerKind, Pin, PinUse, Runtime, Service};
+    use crate::model::{
+        Component, Console, Direction, Ident, OwnerKind, Pin, PinUse, Runtime, Service,
+    };
     use espf::parser::parse_espf;
     use espforge_diagnostics::Severity;
 
@@ -236,6 +248,7 @@ mod tests {
             meta,
             &parsed.sections["peripherals"],
             &parsed.sections["components"],
+            &parsed.sections["devices"],
             &parsed.sections["services"],
         )
     }
@@ -1320,6 +1333,177 @@ mod tests {
         assert_eq!(
             errors[0].labels[0].text,
             "<wss_client id=\"secure_ws\"> rx_buffer_size=\"1024\" is below the minimum of 4096 bytes"
+        );
+    }
+
+    const OLED: &str = "# espforge\n\
+        \x20 <project name=\"oled\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"blocking\" />\n\
+        # peripherals\n\
+        \x20 <i2c id=\"i2c0\" sda=\"6\" scl=\"7\" />\n\
+        # components\n\
+        \x20 <i2c_component id=\"oled_bus\" i2c=\"$i2c0\" address=\"0x3C\" />\n\
+        # devices\n\
+        \x20 <ssd1306 id=\"oled\" i2c_component=\"$oled_bus\" size=\"128x32\" rotation=\"180\" />\n\
+        # services\n";
+
+    #[test]
+    fn an_ssd1306_lowers_onto_its_i2c_component() {
+        let board = lower_src(OLED).expect("the oled lowers");
+        assert_eq!(board.devices.len(), 1);
+        let crate::model::Device::Ssd1306(oled) = &board.devices[0] else {
+            panic!("the device is an ssd1306");
+        };
+        assert_eq!(oled.id.raw, "oled");
+        assert_eq!(oled.i2c_component.raw, "oled_bus");
+        assert_eq!(oled.size, crate::devices::ssd1306::OledSize::S128x32);
+        assert_eq!(oled.rotation, crate::devices::Rotation::R180);
+        assert!(board.uses_ssd1306());
+        assert!(!board.uses_ili9341());
+    }
+
+    #[test]
+    fn an_ssd1306_reference_must_name_an_i2c_component() {
+        let errors = lower_src(&OLED.replace("$oled_bus", "$nope")).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_UNKNOWN_COMPONENT);
+        assert_eq!(errors[0].message, "unknown bus component");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ssd1306 id=\"oled\"> refers to `nope`, which is not an <i2c_component> in `# components`"
+        );
+    }
+
+    #[test]
+    fn an_ssd1306_id_must_become_a_rust_identifier() {
+        let errors = lower_src(&OLED.replace("id=\"oled\"", "id=\"9led\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_INVALID_ID);
+        assert_eq!(errors[0].message, "invalid device id");
+        assert!(errors[0].labels[0].text.contains("valid Rust identifier"));
+    }
+
+    #[test]
+    fn a_display_requires_the_blocking_runtime() {
+        let errors = lower_src_with(OLED, embassy_meta()).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_REQUIRES_BLOCKING);
+        assert_eq!(errors[0].message, "display requires blocking");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ssd1306 id=\"oled\"> needs the blocking runtime; change <runtime type=\"..\" /> to blocking"
+        );
+    }
+
+    #[test]
+    fn an_unknown_device_tag_names_the_displays() {
+        let src = OLED.replace("<ssd1306 id=\"oled\"", "<st7789 id=\"lcd\"");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_UNSUPPORTED);
+        assert_eq!(
+            errors[0].message,
+            "`<st7789>` is not a known element in `# devices`; known: `<ssd1306>`, `<ili9341>`"
+        );
+    }
+
+    const TFT: &str = "# espforge\n\
+        \x20 <project name=\"tft\" />\n\
+        \x20 <chip type=\"esp32c3\" />\n\
+        \x20 <runtime type=\"blocking\" />\n\
+        # peripherals\n\
+        \x20 <spi id=\"spi2\" sclk=\"8\" mosi=\"7\" mode=\"0\" />\n\
+        \x20 <gpio id=\"gpio4\" pin=\"4\" direction=\"output\" />\n\
+        \x20 <gpio id=\"gpio5\" pin=\"5\" direction=\"output\" />\n\
+        \x20 <gpio id=\"gpio6\" pin=\"6\" direction=\"output\" />\n\
+        # components\n\
+        \x20 <spi_component id=\"tft_bus\" spi=\"$spi2\" cs=\"9\" />\n\
+        # devices\n\
+        \x20 <ili9341 id=\"tft\" spi_component=\"$tft_bus\" dc=\"$gpio4\" reset=\"$gpio5\" backlight=\"$gpio6\" rotation=\"90\" />\n\
+        # services\n";
+
+    #[test]
+    fn an_ili9341_lowers_and_claims_its_control_pins() {
+        let board = lower_src(TFT).expect("the tft lowers");
+        assert_eq!(board.devices.len(), 1);
+        let crate::model::Device::Ili9341(tft) = &board.devices[0] else {
+            panic!("the device is an ili9341");
+        };
+        assert_eq!(tft.id.raw, "tft");
+        assert_eq!(tft.spi_component.raw, "tft_bus");
+        assert_eq!((tft.dc.pin().0, tft.reset.pin().0), (4, 5));
+        assert_eq!(tft.backlight.as_ref().map(|pin| pin.pin().0), Some(6));
+        assert_eq!(tft.rotation, crate::devices::Rotation::R90);
+        assert!(!tft.rgb);
+        for pin in [4, 5, 6] {
+            let claim = board.resources.claim_of(Pin(pin)).unwrap();
+            assert_eq!(claim.owner.kind, OwnerKind::Device("ili9341"));
+            assert_eq!(claim.need, PinUse::Output);
+        }
+        assert!(board.takes_spi_component(&Ident::new("tft_bus", 0..0)));
+        assert!(board.uses_ili9341());
+        assert!(!board.uses_ssd1306());
+    }
+
+    #[test]
+    fn a_tft_control_pin_must_be_a_declared_output_gpio() {
+        let errors = lower_src(&TFT.replace("dc=\"$gpio4\"", "dc=\"$gpio9\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_UNKNOWN_GPIO);
+        assert_eq!(errors[0].message, "unknown gpio");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ili9341 id=\"tft\"> refers to `gpio9`, which is not a <gpio> in `# peripherals`"
+        );
+
+        let input = TFT.replace(
+            "<gpio id=\"gpio4\" pin=\"4\" direction=\"output\" />",
+            "<gpio id=\"gpio4\" pin=\"4\" direction=\"input\" />",
+        );
+        let errors = lower_src(&input).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_WRONG_DIRECTION);
+        assert_eq!(errors[0].message, "wrong gpio direction");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ili9341 id=\"tft\"> needs an output pin, but `gpio4` has direction=\"input\""
+        );
+    }
+
+    #[test]
+    fn a_tft_without_a_backlight_still_lowers() {
+        let src = TFT.replace(" backlight=\"$gpio6\"", "");
+        let board = lower_src(&src).expect("backlight is optional");
+        let crate::model::Device::Ili9341(tft) = &board.devices[0] else {
+            panic!("the device is an ili9341");
+        };
+        assert!(tft.backlight.is_none());
+    }
+
+    #[test]
+    fn one_spi_component_takes_one_display() {
+        let src = TFT.replace(
+            "# devices\n",
+            "# devices\n\
+             \x20 <ili9341 id=\"other\" spi_component=\"$tft_bus\" dc=\"$gpio4\" reset=\"$gpio5\" />\n",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_INVALID);
+        assert_eq!(errors[0].message, "spi component already used");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ili9341 id=\"other\"> and <ili9341 id=\"tft\"> both use <spi_component id=\"tft_bus\">"
+        );
+    }
+
+    #[test]
+    fn a_tft_control_pin_beside_an_led_is_a_pin_conflict() {
+        let src = TFT.replace(
+            "  <spi_component id=\"tft_bus\" spi=\"$spi2\" cs=\"9\" />\n",
+            "  <spi_component id=\"tft_bus\" spi=\"$spi2\" cs=\"9\" />\n\
+             \x20 <led id=\"red_led\" gpio=\"$gpio4\" />\n",
+        );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::CONFLICT_PIN);
+        assert_eq!(errors[0].message, "pin conflict");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<led id=\"red_led\"> and <ili9341 id=\"tft\"> both use GPIO4"
         );
     }
 }

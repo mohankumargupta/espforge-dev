@@ -127,7 +127,7 @@ mod tests {
             // the core reader, not by the registry.
             if !matches!(
                 element.section.as_str(),
-                "peripherals" | "components" | "services"
+                "peripherals" | "components" | "devices" | "services"
             ) {
                 continue;
             }
@@ -275,10 +275,10 @@ mod tests {
             assert!(
                 matches!(
                     schema_element.section.as_str(),
-                    "peripherals" | "components" | "services"
+                    "peripherals" | "components" | "devices" | "services"
                 ),
                 "`<{tag}>` is registered from a `<{}>` schema element, but only \
-                 peripherals, components and services lower",
+                 peripherals, components, devices and services lower",
                 schema_element.section
             );
         }
