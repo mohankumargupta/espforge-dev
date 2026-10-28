@@ -124,21 +124,21 @@ impl Lowered for Ssd1306Device {
         let component = format_ident!("{}", self.i2c_component.rust_name());
         let (size_type, size_value) = match self.size {
             OledSize::S128x64 => (
-                quote! { espforge_runtime::Oled128x64 },
-                quote! { espforge_runtime::Oled128x64 },
+                quote! { espforge_drivers::Oled128x64 },
+                quote! { espforge_drivers::Oled128x64 },
             ),
             OledSize::S128x32 => (
-                quote! { espforge_runtime::Oled128x32 },
-                quote! { espforge_runtime::Oled128x32 },
+                quote! { espforge_drivers::Oled128x32 },
+                quote! { espforge_drivers::Oled128x32 },
             ),
         };
         let rotation = oled_rotation(self.rotation);
 
         cx.device_field(quote! {
-            pub #name: espforge_runtime::Ssd1306Display<#size_type>,
+            pub #name: espforge_drivers::Ssd1306Display<#size_type>,
         });
         cx.device_init(quote! {
-            #name: espforge_runtime::Ssd1306Display::new(
+            #name: espforge_drivers::Ssd1306Display::new(
                 components.#component,
                 #size_value,
                 #rotation,

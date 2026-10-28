@@ -680,7 +680,7 @@ mod tests {
         let text = generated(&parts, &case.meta).unwrap();
         assert!(
             text.contains(
-                "pub oled: espforge_runtime::Ssd1306Display<espforge_runtime::Oled128x64>,"
+                "pub oled: espforge_drivers::Ssd1306Display<espforge_drivers::Oled128x64>,"
             ),
             "{text}"
         );

@@ -49,9 +49,9 @@ pub struct Clients {
     pub ntp: bool,
 }
 
-/// The display devices the board declares. The drivers themselves live in the
-/// runtime behind a feature; `embedded-graphics` is what app code draws with,
-/// so the project names it directly.
+/// The display devices the board declares. Each driver lives in
+/// `espforge-drivers` behind a feature; `embedded-graphics` is what app code
+/// draws with, so the project names it directly as well.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Displays {
     pub ssd1306: bool,
@@ -96,9 +96,10 @@ fn dependencies(
     let chip_name = chip.name.as_str();
 
     let mut deps = Table::new();
-    deps["espforge-runtime"] = Item::Value(runtime_dependency(
-        runtime, embassy, wifi, clients, displays,
-    ));
+    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy, wifi, clients));
+    if let Some(drivers) = drivers_dependency(runtime, displays) {
+        deps["espforge-drivers"] = Item::Value(drivers);
+    }
     deps["static_cell"] = value("2.1.1");
     deps["critical-section"] = value("1.2.0");
     deps["log"] = value("0.4.27");
@@ -188,8 +189,8 @@ fn dependencies(
         deps["embassy-sync"] = value("0.8.0");
     }
 
-    // A display is drawn on with `embedded-graphics` from `app.rs`; the driver
-    // crate itself is a runtime feature, so it is not named here.
+    // A display is drawn on with `embedded-graphics` from `app.rs`; the
+    // drivers themselves arrive through `espforge-drivers` above.
     if displays.ssd1306 || displays.ili9341 {
         deps["embedded-graphics"] = value("0.8.1");
     }
@@ -243,7 +244,6 @@ fn runtime_dependency(
     embassy: bool,
     wifi: bool,
     clients: Clients,
-    displays: Displays,
 ) -> Value {
     let mut table = InlineTable::new();
     if let RuntimeSource::Path(path) = source {
@@ -257,12 +257,6 @@ fn runtime_dependency(
     }
     if wifi {
         features.push("wifi");
-    }
-    if displays.ssd1306 {
-        features.push("ssd1306");
-    }
-    if displays.ili9341 {
-        features.push("ili9341");
     }
     if clients.ntp {
         features.push("ntp");
@@ -281,6 +275,38 @@ fn runtime_dependency(
         table.insert("features", Value::Array(array(&features)));
     }
     Value::InlineTable(table)
+}
+
+/// `espforge-drivers = { path?, version, features }`, or `None` when the board
+/// declares no display.
+///
+/// A local `espforge-runtime` path implies a local `espforge-drivers` beside
+/// it, which is the workspace layout and what `--runtime-path` builds expect.
+fn drivers_dependency(source: &RuntimeSource, displays: Displays) -> Option<Value> {
+    if !displays.ssd1306 && !displays.ili9341 {
+        return None;
+    }
+    let mut table = InlineTable::new();
+    if let RuntimeSource::Path(path) = source {
+        let path = std::path::Path::new(path)
+            .parent()
+            .map(|parent| parent.join("espforge-drivers"))
+            .unwrap_or_else(|| std::path::PathBuf::from("espforge-drivers"));
+        table.insert(
+            "path",
+            Value::from(path.to_string_lossy().replace('\\', "/")),
+        );
+    }
+    table.insert("version", Value::from(RUNTIME_VERSION));
+    let mut features: Vec<&str> = Vec::new();
+    if displays.ssd1306 {
+        features.push("ssd1306");
+    }
+    if displays.ili9341 {
+        features.push("ili9341");
+    }
+    table.insert("features", Value::Array(array(&features)));
+    Some(Value::InlineTable(table))
 }
 
 /// `{ version = "...", features = [...] }`.
@@ -574,11 +600,25 @@ mod tests {
         }
     }
 
-    /// A display is a runtime feature plus `embedded-graphics` in the project;
-    /// neither driver crate is named by the project itself.
+    /// A display pulls `espforge-drivers` with just its feature. The runtime no
+    /// longer carries the drivers, and the vendor crates stay in the drivers
+    /// manifest rather than appearing in the generated project.
     #[test]
-    fn a_display_asks_the_runtime_for_its_feature() {
+    fn a_display_asks_the_drivers_crate_for_its_feature() {
         let case = case("esp32c3", Runtime::Blocking, true, &[], &[]);
+        let with = |displays| {
+            parse(
+                &manifest(
+                    &case.meta,
+                    &case.opts,
+                    &RuntimeSource::Published,
+                    &chip("esp32c3"),
+                    Clients::default(),
+                    displays,
+                )
+                .unwrap(),
+            )
+        };
         for (displays, expected) in [
             (
                 Displays {
@@ -594,19 +634,20 @@ mod tests {
                 },
                 "{ version = \"0.6.0\", features = [\"ili9341\"] }",
             ),
+            (
+                Displays {
+                    ssd1306: true,
+                    ili9341: true,
+                },
+                "{ version = \"0.6.0\", features = [\"ssd1306\", \"ili9341\"] }",
+            ),
         ] {
-            let doc = parse(
-                &manifest(
-                    &case.meta,
-                    &case.opts,
-                    &RuntimeSource::Published,
-                    &chip("esp32c3"),
-                    Clients::default(),
-                    displays,
-                )
-                .unwrap(),
+            let doc = with(displays);
+            assert_eq!(
+                dependency(&doc, "espforge-runtime"),
+                "{ version = \"0.6.0\" }"
             );
-            assert_eq!(dependency(&doc, "espforge-runtime"), expected);
+            assert_eq!(dependency(&doc, "espforge-drivers"), expected);
             assert_eq!(dependency(&doc, "embedded-graphics"), "\"0.8.1\"");
             for name in ["ssd1306", "display-interface", "sky-ili9341"] {
                 assert!(doc["dependencies"].get(name).is_none(), "{name}");
@@ -615,7 +656,33 @@ mod tests {
 
         // A project with no display names neither.
         let doc = parse(&cargo(true, &[], Runtime::Blocking));
+        assert!(doc["dependencies"].get("espforge-drivers").is_none());
         assert!(doc["dependencies"].get("embedded-graphics").is_none());
+    }
+
+    /// A local runtime checkout implies the drivers crate beside it, so
+    /// `--runtime-path` projects build against this workspace too.
+    #[test]
+    fn a_local_runtime_path_implies_a_sibling_drivers_path() {
+        let case = case("esp32c3", Runtime::Blocking, true, &[], &[]);
+        let doc = parse(
+            &manifest(
+                &case.meta,
+                &case.opts,
+                &RuntimeSource::Path("/work/espforge-runtime".into()),
+                &chip("esp32c3"),
+                Clients::default(),
+                Displays {
+                    ssd1306: true,
+                    ili9341: false,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            dependency(&doc, "espforge-drivers"),
+            "{ path = \"/work/espforge-drivers\", version = \"0.6.0\", features = [\"ssd1306\"] }"
+        );
     }
 
     fn features(doc: &toml_edit::DocumentMut, dep: &str) -> Vec<String> {

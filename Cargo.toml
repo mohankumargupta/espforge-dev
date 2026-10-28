@@ -5,6 +5,7 @@ members = [
     "espforge",
     "espforge-core",
     "espforge-diagnostics",
+    "espforge-drivers",
     "espforge-elements",
     "espforge-emit",
     "espforge-examples",
@@ -48,6 +49,7 @@ linkme = "0.3.37"
 espf = { path = "espf", version = "0.6.0" }
 espforge-core = { path = "espforge-core", version = "0.6.0" }
 espforge-diagnostics = { path = "espforge-diagnostics", version = "0.6.0" }
+espforge-drivers = { path = "espforge-drivers", version = "0.6.0" }
 espforge-elements = { path = "espforge-elements", version = "0.6.0" }
 espforge-emit = { path = "espforge-emit", version = "0.6.0" }
 # The package keeps its underscore name, so the dependency key matches it.

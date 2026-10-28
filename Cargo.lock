@@ -1328,6 +1328,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "espforge-drivers"
+version = "0.6.0"
+dependencies = [
+ "embedded-graphics",
+ "esp-hal",
+ "espforge-runtime",
+ "sky-ili9341",
+ "ssd1306",
+]
+
+[[package]]
 name = "espforge-elements"
 version = "0.6.0"
 dependencies = [
@@ -1372,7 +1383,6 @@ dependencies = [
  "embassy-net",
  "embassy-sync 0.7.2",
  "embassy-time",
- "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-io-async 0.7.0",
@@ -1381,9 +1391,7 @@ dependencies = [
  "esp-radio",
  "log",
  "rand_core 0.6.4",
- "sky-ili9341",
  "sntpc",
- "ssd1306",
  "static_cell",
 ]
 

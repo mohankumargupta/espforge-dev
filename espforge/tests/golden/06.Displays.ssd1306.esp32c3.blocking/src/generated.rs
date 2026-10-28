@@ -32,15 +32,15 @@ impl Components {
 }
 /// Constructed devices.
 pub struct Devices {
-    pub oled: espforge_runtime::Ssd1306Display<espforge_runtime::Oled128x64>,
+    pub oled: espforge_drivers::Ssd1306Display<espforge_drivers::Oled128x64>,
 }
 impl Devices {
     pub fn new(registry: &mut PeripheralRegistry, components: &mut Components) -> Self {
         Self {
-            oled: espforge_runtime::Ssd1306Display::new(
+            oled: espforge_drivers::Ssd1306Display::new(
                 components.oled_bus,
-                espforge_runtime::Oled128x64,
-                espforge_runtime::DisplayRotation::Rotate0,
+                espforge_drivers::Oled128x64,
+                espforge_drivers::DisplayRotation::Rotate0,
             ),
         }
     }

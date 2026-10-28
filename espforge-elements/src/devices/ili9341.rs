@@ -187,9 +187,9 @@ impl Lowered for Ili9341Device {
         let backlight = output(backlight);
         let orientation = tft_orientation(self.rotation);
         let color_order = if self.rgb {
-            quote! { espforge_runtime::ColorOrder::Rgb }
+            quote! { espforge_drivers::ColorOrder::Rgb }
         } else {
-            quote! { espforge_runtime::ColorOrder::Bgr }
+            quote! { espforge_drivers::ColorOrder::Bgr }
         };
 
         let mut pins = format!("GPIO{}", self.dc.pin().0);
@@ -199,10 +199,10 @@ impl Lowered for Ili9341Device {
         }
 
         cx.device_field(quote! {
-            pub #name: espforge_runtime::Ili9341Display,
+            pub #name: espforge_drivers::Ili9341Display,
         });
         cx.device_init(quote! {
-            #name: espforge_runtime::Ili9341Display::new(
+            #name: espforge_drivers::Ili9341Display::new(
                 components.#component.take().expect("the display's SPI bus was already taken"),
                 esp_hal::gpio::Output::new(
                     #dc,
@@ -216,7 +216,7 @@ impl Lowered for Ili9341Device {
             ),
         });
         cx.safety_comment(
-            format!("{name}: espforge_runtime::Ili9341Display::new("),
+            format!("{name}: espforge_drivers::Ili9341Display::new("),
             format!("SAFETY: espforge checked that no other component uses {pins}."),
         );
     }

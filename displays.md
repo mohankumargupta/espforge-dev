@@ -220,17 +220,13 @@ Implement `Element` in:
 Update `codegen/cargo.rs` to inspect `board.uses_ssd1306()` and `board.uses_ili9341()`:
 
 ```rust
+// App code draws with `embedded-graphics`, so the project names it directly.
 if board.uses_ssd1306() || board.uses_ili9341() {
     deps["embedded-graphics"] = value("0.8.1");
-}
-
-if board.uses_ssd1306() {
-    deps["ssd1306"] = value("0.9.0");
-    deps["display-interface"] = value("0.5.0");
-}
-
-if board.uses_ili9341() {
-    deps["sky-ili9341"] = value("0.1.1");
+    // One feature per declared driver; the vendor crates stay in
+    // `espforge-drivers`. A local `--runtime-path` checkout implies the
+    // sibling `espforge-drivers` directory.
+    deps["espforge-drivers"] = drivers_dependency(runtime, displays);
 }
 ```
 
@@ -249,15 +245,16 @@ impl Devices {
     pub fn new(components: &Components) -> Self {
         let oled = espforge_drivers::Ssd1306Display::new(
             components.oled_bus,
-            ssd1306::size::DisplaySize128x64,
-            ssd1306::rotation::DisplayRotation::Rotate0,
+            espforge_drivers::Oled128x64,
+            espforge_drivers::DisplayRotation::Rotate0,
         );
         let tft = espforge_drivers::Ili9341Display::new(
             components.tft_bus,
             unsafe { registry.peripherals.GPIO4.clone_unchecked() }, // DC
             Some(unsafe { registry.peripherals.GPIO5.clone_unchecked() }), // Reset
             Some(unsafe { registry.peripherals.GPIO6.clone_unchecked() }), // Backlight
-            sky_ili9341::Orientation::Landscape,
+            espforge_drivers::Orientation::Landscape,
+            espforge_drivers::ColorOrder::Bgr,
         );
         Self { oled, tft }
     }
@@ -279,20 +276,21 @@ edition.workspace = true
 
 [dependencies]
 espforge-runtime = { workspace = true }
-esp-hal = { version = "1", features = ["unstable"] }
-embedded-hal = "1.0"
-embedded-graphics = "0.8.1"
-ssd1306 = { version = "0.9.0", default-features = false, optional = true }
-display-interface = { version = "0.5.0", optional = true }
+embedded-graphics = { version = "0.8", optional = true }
+ssd1306 = { version = "0.9", default-features = false, features = ["graphics"], optional = true }
 sky-ili9341 = { version = "0.1.1", default-features = false, features = ["graphics"], optional = true }
 
 [features]
 default = []
-ssd1306 = ["dep:ssd1306", "dep:display-interface"]
-ili9341 = ["dep:sky-ili9341"]
+ssd1306 = ["dep:ssd1306", "dep:embedded-graphics"]
+ili9341 = ["dep:sky-ili9341", "dep:embedded-graphics"]
+
+# Drivers only build for esp targets; host workspace builds see an empty crate.
+[target.'cfg(any(target_arch = "riscv32", target_arch = "xtensa"))'.dependencies]
+esp-hal = { version = "1", features = ["unstable"] }
 ```
 
-### 7.2 SSD1306 Driver (`espforge-drivers/src/ssd1306.rs`)
+### 7.2 SSD1306 Driver (`espforge-drivers/src/display.rs`)
 ```rust
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -343,7 +341,7 @@ impl<SIZE: DisplaySize> Dimensions for Ssd1306Display<SIZE> {
 }
 ```
 
-### 7.3 ILI9341 Driver (`espforge-drivers/src/ili9341.rs`)
+### 7.3 ILI9341 Driver (`espforge-drivers/src/display.rs`)
 ```rust
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::Rgb565;
@@ -521,7 +519,7 @@ T6: Hardware-free compilation check via generated_projects_compile
 4. Verify: Unit tests verifying unknown component (`E0901`), invalid auxiliary pin (`E0902`, `E0903`), and valid lowering.
 
 #### T4 — Codegen in `espforge-emit`
-1. In `codegen/cargo.rs`: Add `embedded-graphics`, `ssd1306`, and `sky-ili9341` when `board.uses_ssd1306()` or `board.uses_ili9341()` is true.
+1. In `codegen/cargo.rs`: Add `embedded-graphics` and an `espforge-drivers` dependency carrying only the declared display feature(s) when `board.uses_ssd1306()` or `board.uses_ili9341()` is true. The vendor crates stay in the drivers crate.
 2. In `codegen/rust.rs`: Emit `pub struct Devices { ... }` and initializers in `Devices::new(&components)`.
 3. Verify: `cargo test -p espforge-emit`.
 
@@ -557,6 +555,6 @@ T6: Hardware-free compilation check via generated_projects_compile
 - [ ] `<ili9341>` correctly claims auxiliary pins (`dc`, `reset`, `backlight`) as `PinUse::Output` and catches pin conflicts.
 - [ ] Generated projects populate `Devices` in `generated.rs`, and `device!(ctx, name)` is callable from `app.rs`.
 - [ ] Both display drivers implement `embedded_graphics::draw_target::DrawTarget`.
-- [ ] Generated `Cargo.toml` selectively pulls in `ssd1306` or `sky-ili9341` only when used.
+- [ ] Generated `Cargo.toml` pulls in `espforge-drivers` with only the declared display feature(s) when used.
 - [ ] `generated_projects_compile` passes `cargo check` for both displays on `riscv32imc-unknown-none-elf`.
 - [ ] All 28+ existing golden projects remain green and byte-identical.

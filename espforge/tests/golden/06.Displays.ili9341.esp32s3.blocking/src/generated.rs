@@ -47,13 +47,13 @@ impl Components {
 }
 /// Constructed devices.
 pub struct Devices {
-    pub tft: espforge_runtime::Ili9341Display,
+    pub tft: espforge_drivers::Ili9341Display,
 }
 impl Devices {
     pub fn new(registry: &mut PeripheralRegistry, components: &mut Components) -> Self {
         Self {
             // SAFETY: espforge checked that no other component uses GPIO4/GPIO5/GPIO6.
-            tft: espforge_runtime::Ili9341Display::new(
+            tft: espforge_drivers::Ili9341Display::new(
                 components
                     .tft_bus
                     .take()
@@ -75,8 +75,8 @@ impl Devices {
                         esp_hal::gpio::OutputConfig::default(),
                     ),
                 ),
-                espforge_runtime::Orientation::Landscape,
-                espforge_runtime::ColorOrder::Bgr,
+                espforge_drivers::Orientation::Landscape,
+                espforge_drivers::ColorOrder::Bgr,
             ),
         }
     }

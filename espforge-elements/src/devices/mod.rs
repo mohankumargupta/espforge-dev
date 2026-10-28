@@ -36,20 +36,20 @@ pub enum Rotation {
 /// The SSD1306 rotation for this value.
 pub(crate) fn oled_rotation(rotation: Rotation) -> TokenStream {
     match rotation {
-        Rotation::R0 => quote! { espforge_runtime::DisplayRotation::Rotate0 },
-        Rotation::R90 => quote! { espforge_runtime::DisplayRotation::Rotate90 },
-        Rotation::R180 => quote! { espforge_runtime::DisplayRotation::Rotate180 },
-        Rotation::R270 => quote! { espforge_runtime::DisplayRotation::Rotate270 },
+        Rotation::R0 => quote! { espforge_drivers::DisplayRotation::Rotate0 },
+        Rotation::R90 => quote! { espforge_drivers::DisplayRotation::Rotate90 },
+        Rotation::R180 => quote! { espforge_drivers::DisplayRotation::Rotate180 },
+        Rotation::R270 => quote! { espforge_drivers::DisplayRotation::Rotate270 },
     }
 }
 
 /// The `sky-ili9341` orientation for this rotation.
 pub(crate) fn tft_orientation(rotation: Rotation) -> TokenStream {
     match rotation {
-        Rotation::R0 => quote! { espforge_runtime::Orientation::Portrait },
-        Rotation::R90 => quote! { espforge_runtime::Orientation::Landscape },
-        Rotation::R180 => quote! { espforge_runtime::Orientation::PortraitFlipped },
-        Rotation::R270 => quote! { espforge_runtime::Orientation::LandscapeFlipped },
+        Rotation::R0 => quote! { espforge_drivers::Orientation::Portrait },
+        Rotation::R90 => quote! { espforge_drivers::Orientation::Landscape },
+        Rotation::R180 => quote! { espforge_drivers::Orientation::PortraitFlipped },
+        Rotation::R270 => quote! { espforge_drivers::Orientation::LandscapeFlipped },
     }
 }
 

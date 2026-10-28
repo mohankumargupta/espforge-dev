@@ -5,7 +5,7 @@
 //! `embedded_graphics::DrawTarget`, so app code draws with the ordinary
 //! primitives and never names the driver crate. They are blocking-only: the
 //! bus components are shared through `RefCell` in the blocking build, and
-//! `sky-ili9341`'s blocking interface is the one this runtime exposes.
+//! `sky-ili9341`'s blocking interface is the one this crate exposes.
 //!
 //! A display takes the bus component it is attached to by value (the OLED
 //! copies the `Copy` I2C handle; the TFT takes the SPI device out of
@@ -23,9 +23,9 @@ use esp_hal::gpio::{Level, Output};
 use ssd1306::mode::DisplayConfig;
 
 #[cfg(feature = "ssd1306")]
-use crate::I2cBus;
+use espforge_runtime::I2cBus;
 #[cfg(feature = "ili9341")]
-use crate::SpiDevice;
+use espforge_runtime::SpiDevice;
 
 #[cfg(feature = "ssd1306")]
 pub use ssd1306::prelude::{
