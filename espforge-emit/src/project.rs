@@ -70,7 +70,8 @@ pub fn layer_overlay(
                 if f.path == "chip.json" {
                     chip_json = Some(f.contents);
                 }
-                seed(f, artifacts, assets);
+                // TODO:need to update docs
+                own(f, artifacts, assets);
             }
             p if p.starts_with("chip/") && wokwi && keep_zig => seed(f, artifacts, assets),
             _ => {}
@@ -85,6 +86,17 @@ pub fn layer_overlay(
     }
 
     Ok(())
+}
+
+/// Copy an overlay file as owned: text becomes an artifact (tracked in manifest),
+/// binary an asset (overwritten on update).
+fn own(f: &OverlayFile, artifacts: &mut Vec<Artifact>, assets: &mut Vec<Asset>) {
+    match std::str::from_utf8(f.contents) {
+        Ok(text) if !f.path.ends_with(".wasm") => {
+            artifacts.push(Artifact::owned(f.path, text));
+        }
+        _ => assets.push(Asset::owned(f.path, f.contents)),
+    }
 }
 
 /// Copy an overlay file as seed-once: text becomes an artifact, binary (and
@@ -104,6 +116,12 @@ pub fn readme(project_name: &str, artifacts: &[Artifact], assets: &[Asset]) -> A
         .iter()
         .filter(|a| a.ownership == Ownership::Owned)
         .map(|a| a.path.as_str())
+        .chain(
+            assets
+                .iter()
+                .filter(|a| a.ownership == Ownership::Owned)
+                .map(|a| a.path.as_str()),
+        )
         .collect();
     let mut seeded: Vec<&str> = artifacts
         .iter()

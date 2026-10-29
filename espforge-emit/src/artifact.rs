@@ -23,6 +23,14 @@ pub struct Asset {
 }
 
 impl Asset {
+    pub fn owned(path: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            path: path.into(),
+            bytes: bytes.into(),
+            ownership: Ownership::Owned,
+        }
+    }
+
     pub fn seed_once(path: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
         Self {
             path: path.into(),
