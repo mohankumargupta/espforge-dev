@@ -1,43 +1,32 @@
-//! Display drivers: [`Ssd1306Display`] (I2C OLED) and [`Ili9341Display`] (SPI
-//! TFT).
-//!
-//! Both wrap a third-party driver and implement
-//! `embedded_graphics::DrawTarget`, so app code draws with the ordinary
-//! primitives and never names the driver crate. They are blocking-only: the
-//! bus components are shared through `RefCell` in the blocking build, and
-//! `sky-ili9341`'s blocking interface is the one this crate exposes.
-//!
-//! A display takes the bus component it is attached to by value (the OLED
-//! copies the `Copy` I2C handle; the TFT takes the SPI device out of
-//! `Components`), so nothing else can drive the same display bus.
+Here is the complete flat file restructuring for `espforge-drivers/src/`.
 
-#[cfg(feature = "ssd1306")]
+### File Operations:
+1. **Create** `espforge-drivers/src/ssd1306.rs`
+2. **Create** `espforge-drivers/src/ili9341.rs`
+3. **Update** `espforge-drivers/src/lib.rs`
+4. **Delete** `espforge-drivers/src/display.rs`
+
+---
+
+### 1. `espforge-drivers/src/ssd1306.rs`
+
+```rust
+//! SSD1306 monochrome I2C OLED display driver.
+
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::{
     Pixel, draw_target::DrawTarget, geometry::Size, prelude::OriginDimensions,
 };
 use esp_hal::Blocking;
-#[cfg(feature = "ili9341")]
-use esp_hal::gpio::{Level, Output};
-#[cfg(feature = "ssd1306")]
+use espforge_runtime::I2cBus;
 use ssd1306::mode::DisplayConfig;
 
-#[cfg(feature = "ssd1306")]
-use espforge_runtime::I2cBus;
-#[cfg(feature = "ili9341")]
-use espforge_runtime::SpiDevice;
-
-#[cfg(feature = "ssd1306")]
 pub use ssd1306::prelude::{
     DisplayRotation, DisplaySize128x32 as Oled128x32, DisplaySize128x64 as Oled128x64,
 };
 
-#[cfg(feature = "ili9341")]
-pub use sky_ili9341::{ColorOrder, Orientation};
-
 /// The rotation of an OLED panel, re-exported so generated code names only
 /// this crate.
-#[cfg(feature = "ssd1306")]
 type Oled<SIZE> = ssd1306::Ssd1306<
     ssd1306::prelude::I2CInterface<I2cBus<Blocking>>,
     SIZE,
@@ -48,12 +37,10 @@ type Oled<SIZE> = ssd1306::Ssd1306<
 ///
 /// `SIZE` is one of [`Oled128x64`] or [`Oled128x32`]; the constructor takes the
 /// size marker by value, in the same way `ssd1306` does.
-#[cfg(feature = "ssd1306")]
 pub struct Ssd1306Display<SIZE: ssd1306::prelude::DisplaySize> {
     display: Oled<SIZE>,
 }
 
-#[cfg(feature = "ssd1306")]
 impl<SIZE: ssd1306::prelude::DisplaySize> Ssd1306Display<SIZE> {
     /// Build the panel on `bus` and run its initialization sequence.
     pub fn new(bus: I2cBus<Blocking>, size: SIZE, rotation: DisplayRotation) -> Self {
@@ -75,7 +62,6 @@ impl<SIZE: ssd1306::prelude::DisplaySize> Ssd1306Display<SIZE> {
     }
 }
 
-#[cfg(feature = "ssd1306")]
 impl<SIZE: ssd1306::prelude::DisplaySize> DrawTarget for Ssd1306Display<SIZE> {
     type Color = BinaryColor;
     type Error = ();
@@ -88,24 +74,38 @@ impl<SIZE: ssd1306::prelude::DisplaySize> DrawTarget for Ssd1306Display<SIZE> {
     }
 }
 
-#[cfg(feature = "ssd1306")]
 impl<SIZE: ssd1306::prelude::DisplaySize> OriginDimensions for Ssd1306Display<SIZE> {
     fn size(&self) -> Size {
         self.display.size()
     }
 }
+```
+
+---
+
+### 2. `espforge-drivers/src/ili9341.rs`
+
+```rust
+//! ILI9341 SPI color TFT display driver.
+
+use embedded_graphics::{
+    Pixel, draw_target::DrawTarget, geometry::Size, prelude::OriginDimensions,
+};
+use esp_hal::Blocking;
+use esp_hal::gpio::{Level, Output};
+use espforge_runtime::SpiDevice;
+
+pub use sky_ili9341::{ColorOrder, Orientation};
 
 /// An ILI9341 color TFT panel on an SPI device.
 ///
 /// The display owns its SPI device: the `<spi_component>` it was declared with
 /// is taken out of `Components` when `Devices::new` runs.
-#[cfg(feature = "ili9341")]
 pub struct Ili9341Display {
     display: sky_ili9341::Display<sky_ili9341::SpiInterface<SpiDevice<Blocking>, Output<'static>>>,
     backlight: Option<Output<'static>>,
 }
 
-#[cfg(feature = "ili9341")]
 impl Ili9341Display {
     /// Build the panel and run its initialization sequence.
     ///
@@ -143,7 +143,6 @@ impl Ili9341Display {
     }
 }
 
-#[cfg(feature = "ili9341")]
 impl DrawTarget for Ili9341Display {
     type Color = embedded_graphics::pixelcolor::Rgb565;
     type Error = ();
@@ -168,9 +167,60 @@ impl DrawTarget for Ili9341Display {
     }
 }
 
-#[cfg(feature = "ili9341")]
 impl OriginDimensions for Ili9341Display {
     fn size(&self) -> Size {
         self.display.size()
     }
 }
+```
+
+---
+
+### 3. `espforge-drivers/src/lib.rs`
+
+```rust
+//! espforge-drivers: device drivers for generated firmware projects.
+//!
+//! Drivers wrap third-party crates and expose the types and operations app
+//! code uses, so a generated project never names the vendor crate directly.
+//! They depend on [`espforge_runtime`] for the bus handles and delays the
+//! generated `Components` struct hands out.
+//!
+//! Target-only in practice, but the crate compiles on the host too (the
+//! esp-hal parts live behind one cfg), so `cargo build`/`cargo test` on the
+//! workspace work.
+
+#![cfg_attr(not(test), no_std)]
+
+#[cfg(all(
+    any(target_arch = "riscv32", target_arch = "xtensa"),
+    feature = "ssd1306"
+))]
+pub mod ssd1306;
+
+#[cfg(all(
+    any(target_arch = "riscv32", target_arch = "xtensa"),
+    feature = "ssd1306"
+))]
+pub use ssd1306::*;
+
+#[cfg(all(
+    any(target_arch = "riscv32", target_arch = "xtensa"),
+    feature = "ili9341"
+))]
+pub mod ili9341;
+
+#[cfg(all(
+    any(target_arch = "riscv32", target_arch = "xtensa"),
+    feature = "ili9341"
+))]
+pub use ili9341::*;
+```
+
+---
+
+### 4. Remove `espforge-drivers/src/display.rs`
+
+Delete `src/display.rs`.
+
+Each driver now has its own standalone file without internal `#[cfg(feature = "...")]` noise, and the crate root exports remain 100% backward-compatible with generated code (`espforge_drivers::Ssd1306Display`, `espforge_drivers::Ili9341Display`, etc.).

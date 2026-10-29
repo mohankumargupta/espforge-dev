@@ -13,11 +13,24 @@
 
 #[cfg(all(
     any(target_arch = "riscv32", target_arch = "xtensa"),
-    any(feature = "ssd1306", feature = "ili9341")
+    feature = "ssd1306"
 ))]
-mod display;
+pub mod ssd1306;
+
 #[cfg(all(
     any(target_arch = "riscv32", target_arch = "xtensa"),
-    any(feature = "ssd1306", feature = "ili9341")
+    feature = "ssd1306"
 ))]
-pub use display::*;
+pub use ssd1306::*;
+
+#[cfg(all(
+    any(target_arch = "riscv32", target_arch = "xtensa"),
+    feature = "ili9341"
+))]
+pub mod ili9341;
+
+#[cfg(all(
+    any(target_arch = "riscv32", target_arch = "xtensa"),
+    feature = "ili9341"
+))]
+pub use ili9341::*;
