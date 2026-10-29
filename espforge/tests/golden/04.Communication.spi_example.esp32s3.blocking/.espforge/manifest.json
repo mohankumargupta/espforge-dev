@@ -1,8 +1,9 @@
 {
   "files": {
     "Cargo.toml": "4ef00d0a8a2b2fd1",
-    "README.txt": "73045224b60d1d11",
+    "README.txt": "e478fe66135c6b89",
     "build.rs": "82f37776fdcc61fd",
+    "chip.json": "017968cb98ac712d",
     "diagram.json": "75170b13b496a2ec",
     "src/bin/main.rs": "efc5730f7fd3a9cd",
     "src/generated.rs": "da391f4aa0371fb1",

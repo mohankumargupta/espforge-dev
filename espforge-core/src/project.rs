@@ -119,6 +119,10 @@ pub fn write_checked(
     std::fs::create_dir_all(out.join("src"))?;
     std::fs::write(out.join("src").join("app.rs"), app)?;
 
+    // Keep the ESPF source that produced this build next to the manifest, so the
+    // generated project always carries the exact document it came from.
+    std::fs::write(out.join(".espforge").join("source.espf.txt"), &source.text)?;
+
     Ok(Written {
         crate_name: checked.meta.crate_name(),
         notes: checked.notes.clone(),
@@ -152,9 +156,14 @@ mod tests {
             "src/app.rs",
             "README.txt",
             ".espforge/manifest.json",
+            ".espforge/source.espf.txt",
         ] {
             assert!(out.join(f).is_file(), "missing {f}");
         }
+        assert_eq!(
+            std::fs::read_to_string(out.join(".espforge/source.espf.txt")).unwrap(),
+            source.text
+        );
         assert!(
             std::fs::read_to_string(out.join("src/app.rs"))
                 .unwrap()

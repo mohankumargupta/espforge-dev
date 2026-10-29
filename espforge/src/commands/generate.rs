@@ -128,6 +128,7 @@ mod tests {
             "src/app.rs",
             "README.txt",
             ".espforge/manifest.json",
+            ".espforge/source.espf.txt",
         ] {
             assert!(out.join(f).is_file(), "missing {f}");
         }
