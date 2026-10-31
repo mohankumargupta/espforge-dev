@@ -201,9 +201,9 @@ impl Lowered for SpiComponent {
         let cs_pin = self.cs.pin().0;
         let cs = gpio(cs_pin);
         let runtime = runtime_type(board.meta.runtime);
-        // A display device owns the SPI device of the bus it sits on, so the
+        // A device that takes the bus (a display) owns this SPI device, so the
         // component's field is an `Option` that `Devices::new` takes. Without
-        // a device the field is plain, as it has always been.
+        // one the field is plain, as it has always been.
         let value = quote! {
             espforge_runtime::SpiDevice::new(
                 #handle,
@@ -215,7 +215,7 @@ impl Lowered for SpiComponent {
                 espforge_runtime::Delay::new(),
             )
         };
-        if board.takes_spi_component(&self.id) {
+        if board.takes_component(&self.id) {
             cx.field(quote! {
                 pub #name: Option<espforge_runtime::SpiDevice<#runtime>>,
             });
@@ -231,7 +231,7 @@ impl Lowered for SpiComponent {
             });
         }
         // A consumed bus wraps the same constructor in `Some(..)`.
-        let anchor = if board.takes_spi_component(&self.id) {
+        let anchor = if board.takes_component(&self.id) {
             format!("{name}: Some(")
         } else {
             format!("{name}: espforge_runtime::SpiDevice::new(")

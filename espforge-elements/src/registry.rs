@@ -5,18 +5,20 @@
 //! this crate explicitly, and the "registry is non-empty" test guards the
 //! other failure mode: a slice the linker drops.
 //!
-//! There is a second door for the recipe tier: a schema element with a
-//! `recipe` needs no Rust file, so [`element`] falls back to
-//! [`recipes`], one interpreter per recipe element in schema order. The
-//! coherence tests keep the two doors from disagreeing.
+//! There are two more doors, both keyed on data the schema owns: a component
+//! with a `recipe` needs no Rust file, and a device with a `device_recipe`
+//! needs none either, so [`element`] falls back to [`recipes`] and
+//! [`device_recipes`] in schema order. The coherence tests keep the three
+//! doors from disagreeing: every element has exactly one implementation.
 
 use std::sync::OnceLock;
 
-use espforge_schema::schema;
 use linkme::distributed_slice;
 
 use crate::components::recipe::RecipeElement;
+use crate::devices::recipe::DeviceRecipeElement;
 use crate::element::Element;
+use crate::schema::schema;
 
 /// Every registered element.
 ///
@@ -48,8 +50,25 @@ pub fn recipes() -> &'static [RecipeElement] {
     })
 }
 
+/// One [`DeviceRecipeElement`] per schema element that declares a
+/// `device_recipe`, in schema order.
+///
+/// The device tier: a driver whose wiring is data needs no Rust element, so
+/// adding one edits the driver crate and nothing here.
+pub fn device_recipes() -> &'static [DeviceRecipeElement] {
+    static RECIPES: OnceLock<Vec<DeviceRecipeElement>> = OnceLock::new();
+    RECIPES.get_or_init(|| {
+        schema()
+            .elements
+            .iter()
+            .filter(|element| element.device_recipe.is_some())
+            .map(DeviceRecipeElement::new)
+            .collect()
+    })
+}
+
 /// The registered element for `tag`, if any: a hand-written element first,
-/// then a recipe from the schema.
+/// then a component recipe, then a device recipe.
 pub fn element(tag: &str) -> Option<&'static dyn Element> {
     ELEMENTS
         .iter()
@@ -61,12 +80,18 @@ pub fn element(tag: &str) -> Option<&'static dyn Element> {
                 .find(|element| element.tag() == tag)
                 .map(|element| element as &'static dyn Element)
         })
+        .or_else(|| {
+            device_recipes()
+                .iter()
+                .find(|element| element.tag() == tag)
+                .map(|element| element as &'static dyn Element)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use espforge_schema::{AttrDef, AttrKind, schema};
+    use espforge_schema::{AttrDef, AttrKind};
 
     #[test]
     fn the_registry_is_not_empty() {
@@ -88,9 +113,9 @@ mod tests {
     }
 
     /// An element must have exactly one implementation: a hand-written
-    /// `Element` in the slice, or a `recipe` in the schema — never both, never
-    /// neither. Pure, so the "two doors" failure is exercised without adding a
-    /// real element.
+    /// `Element` in the slice, or a `recipe` / `device_recipe` in the schema —
+    /// never both, never neither. Pure, so the "two doors" failure is
+    /// exercised without adding a real element.
     fn implementation_problem(
         element: &espforge_schema::Element,
         hand_written: &[&str],
@@ -99,11 +124,12 @@ mod tests {
             .iter()
             .filter(|tag| **tag == element.tag.as_str())
             .count();
-        match (registered, element.recipe.is_some()) {
+        let recipe = element.recipe.is_some() || element.device_recipe.is_some();
+        match (registered, recipe) {
             (1, false) | (0, true) => None,
             (0, false) => Some(format!(
-                "`<{}>` has no implementation: add a `recipe` to its schema block, or \
-                 `espforge-elements/src/{}/{}.rs`",
+                "`<{}>` has no implementation: add a `recipe` (or a `device_recipe` for a \
+                 device) to its schema block, or `espforge-elements/src/{}/{}.rs`",
                 element.tag,
                 element.section,
                 element.tag.replace('-', "_"),
@@ -259,6 +285,42 @@ mod tests {
                 panic!("{problem}");
             }
         }
+    }
+
+    /// The device door is open: a `device_recipe` element is found without a
+    /// Rust file, in schema order after the component recipes.
+    #[test]
+    fn the_device_door_reaches_every_recipe_driver() {
+        for tag in ["ssd1306", "ili9341", "scd4x"] {
+            let registered = element(tag).unwrap_or_else(|| panic!("`<{tag}>` has an implementation"));
+            assert_eq!(registered.tag(), tag);
+            assert!(
+                device_recipes().iter().any(|recipe| recipe.tag() == tag),
+                "`<{tag}>` comes from its device recipe"
+            );
+            let schema_element = schema().element(tag).unwrap();
+            assert!(
+                implementation_problem(schema_element, &[]).is_none(),
+                "`<{tag}>` has exactly one implementation"
+            );
+        }
+    }
+
+    /// A device with a `device_recipe` *and* a registered implementation has
+    /// two doors, and the coherence test names the file to delete.
+    #[test]
+    fn a_device_recipe_beside_a_rust_file_is_refused() {
+        let schema = schema();
+        let ili = schema
+            .element("ili9341")
+            .expect("`<ili9341>` is a schema element");
+        let problem = implementation_problem(ili, &["ili9341"]).expect("two doors is a problem");
+        assert!(
+            problem.contains("delete `espforge-elements/src/devices/ili9341.rs`"),
+            "{problem}"
+        );
+        assert!(problem.contains("already has a `recipe`"), "{problem}");
+        assert!(implementation_problem(ili, &[]).is_none());
     }
 
     #[test]

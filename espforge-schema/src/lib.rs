@@ -63,7 +63,22 @@ pub struct Schema {
     pub options: Vec<OptionDef>,
 }
 
+impl Default for Schema {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Schema {
+    /// An empty schema, for [`load_all`] to fill from several sources.
+    pub fn new() -> Self {
+        Self {
+            sections: Vec::new(),
+            elements: Vec::new(),
+            options: Vec::new(),
+        }
+    }
+
     pub fn section_named(&self, name: &str) -> Option<&Section> {
         self.sections.iter().find(|s| s.name == name)
     }
@@ -106,6 +121,10 @@ pub struct Element {
     /// The `recipe` child, when this element is a component built from a pin
     /// reference and booleans rather than its own Rust file.
     pub recipe: Option<Recipe>,
+    /// The `device_recipe` child, when this element is a driver built from a
+    /// bus component, auxiliary pins and value slots rather than its own Rust
+    /// file.
+    pub device_recipe: Option<DeviceRecipe>,
     /// Span of the `element` node in `espf.schema.kdl`.
     pub span: Range<usize>,
 }
@@ -123,6 +142,62 @@ pub struct Recipe {
     /// The `DiagCode` for "cannot be built".
     pub invalid: DiagCode,
     /// Span of the `recipe` node in `espf.schema.kdl`.
+    pub span: Range<usize>,
+}
+
+/// The `device_recipe` child of a `# devices` element: how to build a driver
+/// from one bus component, its auxiliary pins and its value slots, with no
+/// Rust file of its own.
+///
+/// The recipe carries data, not code. Each [`DeviceArg`] either maps an ESPF
+/// spelling to the Rust expression it emits, or templates a claimed pin, so the
+/// generic lowerer never parses a Rust expression to fill a placeholder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRecipe {
+    /// The element's `attr` of `kind="ref"` that names the component this
+    /// device is attached to (`i2c_component`).
+    pub bus: String,
+    /// The component tag that reference must name, taken from the bus
+    /// attribute's own `to=`.
+    pub expect: String,
+    /// The `espforge-drivers` feature the generated project names.
+    pub feature: String,
+    /// The kind word the diagnostics use ("display").
+    pub kind: String,
+    /// The field's Rust type, with `{slot}` placeholders for `arg` values.
+    pub ty: String,
+    /// The Rust path of the constructor, called with the bus and every `arg`
+    /// in declared order.
+    pub new: String,
+    /// Whether the device takes the bus component by value, so its
+    /// `Components` field is an `Option` the device takes.
+    pub takes_bus: bool,
+    /// The `expect` message when the bus was already taken.
+    pub taken: Option<String>,
+    /// Crates the generated project must name because of this driver
+    /// (`embedded-graphics`).
+    pub deps: Vec<String>,
+    /// The value slots, in constructor argument order.
+    pub args: Vec<DeviceArg>,
+    /// Span of the `device_recipe` node in the schema text.
+    pub span: Range<usize>,
+}
+
+/// One `arg` of a [`DeviceRecipe`]: a slot the constructor takes, either a
+/// value mapped from the attribute's spelling or a claimed auxiliary pin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceArg {
+    /// The element attribute this slot reads.
+    pub name: String,
+    /// `Some` for a `map` slot: the ESPF spelling to the Rust expression it
+    /// emits. Every value the attribute allows has an entry.
+    pub map: Option<Vec<(String, String)>>,
+    /// `Some` for a `pin` slot: the Rust expression with `{n}` where the pin
+    /// number goes.
+    pub pin: Option<String>,
+    /// The direction the referenced `<gpio>` must declare (pin slots).
+    pub direction: Direction,
+    /// Span of the `arg` node in the schema text.
     pub span: Range<usize>,
 }
 
@@ -357,10 +432,40 @@ fn children(node: &KdlNode) -> &[KdlNode] {
 /// tag uniqueness across sections, every `to=` and `see_also` target, and that
 /// every element has a summary and at least one example.
 pub fn load(src: &str) -> Result<Schema, Vec<SchemaError>> {
+    load_all(&[src])
+}
+
+/// Parse several schema sources into one schema.
+///
+/// The core vocabulary lives in `espforge-schema`; a driver crate co-locates
+/// its own `# devices` elements beside its code. Composing is the caller's
+/// job, so that every crate owns the file it embeds and no crate reaches into
+/// a sibling checkout with `include_str!`. Cross-source checks (tag uniqueness,
+/// `to=` and `see_also` targets) run once, after every source is parsed, so a
+/// fragment may refer to an element declared in another one.
+pub fn load_all(sources: &[&str]) -> Result<Schema, Vec<SchemaError>> {
+    let mut schema = Schema::new();
+    let mut errors = Vec::new();
+    for src in sources {
+        parse_into(&mut schema, src, &mut errors);
+    }
+
+    check_references(&schema, &mut errors);
+
+    if errors.is_empty() {
+        Ok(schema)
+    } else {
+        errors.sort_by_key(|e| e.span.start);
+        Err(errors)
+    }
+}
+
+/// Parse one source into `schema`, reporting every problem in it.
+fn parse_into(schema: &mut Schema, src: &str, errors: &mut Vec<SchemaError>) {
     let doc = match KdlDocument::parse_v2(src) {
         Ok(d) => d,
         Err(e) => {
-            let errors: Vec<SchemaError> = e
+            let syntax: Vec<SchemaError> = e
                 .diagnostics
                 .iter()
                 .map(|d| {
@@ -372,41 +477,26 @@ pub fn load(src: &str) -> Result<Schema, Vec<SchemaError>> {
                     )
                 })
                 .collect();
-            return Err(if errors.is_empty() {
-                vec![err(0..0, "invalid KDL", "the file is not valid KDL v2")]
+            if syntax.is_empty() {
+                errors.push(err(0..0, "invalid KDL", "the file is not valid KDL v2"));
             } else {
-                errors
-            });
+                errors.extend(syntax);
+            }
+            return;
         }
     };
 
-    let mut schema = Schema {
-        sections: Vec::new(),
-        elements: Vec::new(),
-        options: Vec::new(),
-    };
-    let mut errors = Vec::new();
-
     for node in doc.nodes() {
         match node.name().value() {
-            "section" => parse_section(node, &mut schema, &mut errors),
-            "element" => parse_element(node, &mut schema, &mut errors),
-            "required" | "options" => parse_options(node, &mut schema, &mut errors),
+            "section" => parse_section(node, schema, errors),
+            "element" => parse_element(node, schema, errors),
+            "required" | "options" => parse_options(node, schema, errors),
             other => errors.push(err(
                 node_range(node),
                 format!("unknown top-level node `{other}`"),
                 "expected `section`, `element` or `options`",
             )),
         }
-    }
-
-    check_references(&schema, &mut errors);
-
-    if errors.is_empty() {
-        Ok(schema)
-    } else {
-        errors.sort_by_key(|e| e.span.start);
-        Err(errors)
     }
 }
 
@@ -542,6 +632,7 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
     let mut examples = Vec::new();
     let mut see_also = Vec::new();
     let mut recipe_node: Option<&KdlNode> = None;
+    let mut device_recipe_node: Option<&KdlNode> = None;
     for child in children(node) {
         match child.name().value() {
             "summary" | "description" => {
@@ -575,6 +666,17 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
                     recipe_node = Some(child);
                 }
             }
+            "device_recipe" => {
+                if device_recipe_node.is_some() {
+                    errors.push(err(
+                        node_range(child),
+                        "`device_recipe` given twice",
+                        "keep one",
+                    ));
+                } else {
+                    device_recipe_node = Some(child);
+                }
+            }
             "example" => parse_example(child, &mut examples, errors),
             "see_also" => {
                 for (target, target_span) in positional_strings(child, errors) {
@@ -592,15 +694,18 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
             other => errors.push(err(
                 node_range(child),
                 format!("unknown node `{other}` in element `{tag}`"),
-                "expected summary, description, attr, recipe, example or see_also",
+                "expected summary, description, attr, recipe, device_recipe, example or \
+                 see_also",
             )),
         }
     }
 
-    // Validated after the walk so the recipe can be checked against every
-    // `attr` the element declares, wherever the `recipe` line sits.
+    // Validated after the walk so the recipes can be checked against every
+    // `attr` the element declares, wherever the recipe line sits.
     let recipe =
         recipe_node.and_then(|node| parse_recipe(node, &tag, &section_name, &attrs, errors));
+    let device_recipe = device_recipe_node
+        .and_then(|node| parse_device_recipe(node, &tag, &section_name, &attrs, errors));
 
     if summary.is_none() {
         errors.push(err(
@@ -626,6 +731,7 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
         examples,
         see_also,
         recipe,
+        device_recipe,
         span,
     });
 }
@@ -775,6 +881,405 @@ fn is_rust_path(text: &str) -> bool {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
+}
+
+/// The `{slot}` names in a Rust type expression, in order.
+fn slots(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some((_, tail)) = rest.split_once('{') {
+        let Some((name, after)) = tail.split_once('}') else {
+            break;
+        };
+        out.push(name.trim().to_string());
+        rest = after;
+    }
+    out
+}
+
+/// Parse and validate the `device_recipe` child of a `# devices` element.
+///
+/// The recipe is data: the bus attribute, one slot per remaining attribute,
+/// the driver feature and the Rust type and constructor. Filling those slots
+/// is `espforge-elements`'s job, and every rule that could make a slot
+/// unfillable is a load error here.
+fn parse_device_recipe(
+    node: &KdlNode,
+    tag: &str,
+    section: &str,
+    attrs: &[AttrDef],
+    errors: &mut Vec<SchemaError>,
+) -> Option<DeviceRecipe> {
+    let span = node_range(node);
+
+    if section != "devices" {
+        errors.push(err(
+            span,
+            "`device_recipe` is for devices",
+            "only an element in `# devices` has a bus component to attach to",
+        ));
+        return None;
+    }
+
+    if !attrs
+        .iter()
+        .any(|attr| attr.name == "id" && attr.kind == AttrKind::Ident)
+    {
+        errors.push(err(
+            span.clone(),
+            format!("`device_recipe` element `{tag}` has no `id`"),
+            "write `attr \"id\" kind=\"ident\" required=#true`",
+        ));
+    }
+
+    for name in ["bus", "feature", "kind", "type", "new", "taken"] {
+        if children(node)
+            .iter()
+            .filter(|child| child.name().value() == name)
+            .count()
+            > 1
+        {
+            errors.push(err(
+                node_range(node),
+                format!("`{name}` given twice"),
+                "keep one",
+            ));
+        }
+    }
+
+    let Some((bus, bus_span)) = child_string(node, "bus", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`device_recipe` has no `bus`",
+            "name the element's `ref` attribute, e.g. `bus=\"i2c_component\"`",
+        ));
+        return None;
+    };
+    let expect = match attrs
+        .iter()
+        .find(|attr| attr.name == bus)
+        .map(|attr| &attr.kind)
+    {
+        Some(AttrKind::Ref { to }) => match to.first() {
+            Some(target) => target.clone(),
+            None => {
+                errors.push(err(
+                    bus_span.clone(),
+                    format!("`{tag}.{bus}` has no `to=`"),
+                    "a device's bus attribute names the component tag it accepts",
+                ));
+                return None;
+            }
+        },
+        _ => {
+            let refs: Vec<String> = attrs
+                .iter()
+                .filter(|attr| matches!(attr.kind, AttrKind::Ref { .. }))
+                .map(|attr| format!("`{}`", attr.name))
+                .collect();
+            errors.push(err(
+                bus_span,
+                format!("`<{tag}>` has no ref attribute `{bus}`"),
+                format!(
+                    "`bus` must name one of: {}",
+                    if refs.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        refs.join(", ")
+                    }
+                ),
+            ));
+            return None;
+        }
+    };
+
+    let Some((feature, feature_span)) = child_string(node, "feature", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`device_recipe` has no `feature`",
+            "name the `espforge-drivers` feature, e.g. `feature=\"ssd1306\"`",
+        ));
+        return None;
+    };
+    if feature.is_empty() {
+        errors.push(err(
+            feature_span,
+            "`feature` is empty",
+            "name the `espforge-drivers` feature",
+        ));
+        return None;
+    }
+
+    let kind = child_string(node, "kind", errors)
+        .map(|(kind, _)| kind)
+        .unwrap_or_else(|| "device".to_string());
+
+    let Some((ty, ty_span)) = child_string(node, "type", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`device_recipe` has no `type`",
+            "name the generated field's Rust type, e.g. `type=\"espforge_drivers::Scd4x\"`",
+        ));
+        return None;
+    };
+
+    let Some((new, new_span)) = child_string(node, "new", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`device_recipe` has no `new`",
+            "name the constructor, e.g. `new=\"espforge_drivers::Scd4x::new\"`",
+        ));
+        return None;
+    };
+    if !is_rust_path(&new) {
+        errors.push(err(
+            new_span,
+            "`new` must be a Rust path such as `espforge_drivers::Scd4x::new`",
+            "segments are identifiers separated by `::`",
+        ));
+        return None;
+    }
+
+    let takes_bus = children(node)
+        .iter()
+        .any(|child| child.name().value() == "takes_bus");
+
+    let taken = child_string(node, "taken", errors).map(|(taken, _)| taken);
+    let mut deps: Vec<String> = Vec::new();
+    for child in children(node) {
+        if child.name().value() == "deps" {
+            deps.extend(positional_strings(child, errors).into_iter().map(|(dep, _)| dep));
+        }
+    }
+
+    let mut args: Vec<DeviceArg> = Vec::new();
+    for child in children(node) {
+        match child.name().value() {
+            // The scalars were collected above, by name.
+            "bus" | "feature" | "kind" | "type" | "new" | "takes_bus" | "taken" | "deps" => {}
+            "arg" => parse_device_arg(child, tag, attrs, &mut args, errors),
+            other => errors.push(err(
+                node_range(child),
+                format!("unknown node `{other}` in `device_recipe` of `{tag}`"),
+                "expected bus, feature, kind, type, new, takes_bus, taken, deps or arg",
+            )),
+        }
+    }
+
+    // A slot per attribute, and no attribute without a slot: a device recipe
+    // that reads an attribute nowhere is a mistake, not a fixed value.
+    for attr in attrs {
+        if attr.name == "id" || attr.name == bus {
+            continue;
+        }
+        if !args.iter().any(|arg| arg.name == attr.name) {
+            errors.push(err(
+                attr.span.clone(),
+                format!("`{tag}.{}` has no `arg` in `device_recipe`", attr.name),
+                "a device recipe names every attribute except `id` and its `bus`",
+            ));
+        }
+    }
+
+    // Every type placeholder names a slot the recipe fills.
+    for slot in slots(&ty) {
+        if !args.iter().any(|arg| arg.name == slot) {
+            errors.push(err(
+                ty_span.clone(),
+                format!("`type` uses `{{{slot}}}`, which is not an `arg`"),
+                "add that `arg`, or drop the placeholder",
+            ));
+        }
+    }
+
+    Some(DeviceRecipe {
+        bus,
+        expect,
+        feature,
+        kind,
+        ty,
+        new,
+        takes_bus,
+        taken,
+        deps,
+        args,
+        span,
+    })
+}
+
+/// The first positional string of the child node `name`, with its span.
+///
+/// A missing child is `None`; a child with no string is a schema error.
+fn child_string(
+    node: &KdlNode,
+    name: &str,
+    errors: &mut Vec<SchemaError>,
+) -> Option<(String, Range<usize>)> {
+    let child = children(node)
+        .iter()
+        .find(|child| child.name().value() == name)?;
+    match positional_strings(child, errors).into_iter().next() {
+        Some(value) => Some(value),
+        None => {
+            errors.push(err(
+                node_range(child),
+                format!("`{name}` takes a string"),
+                "quote it",
+            ));
+            None
+        }
+    }
+}
+
+/// Parse and validate one `arg` slot of a [`DeviceRecipe`].
+fn parse_device_arg(
+    node: &KdlNode,
+    tag: &str,
+    attrs: &[AttrDef],
+    args: &mut Vec<DeviceArg>,
+    errors: &mut Vec<SchemaError>,
+) {
+    let span = node_range(node);
+    let mut names = positional_strings(node, errors);
+    if names.is_empty() {
+        errors.push(err(span, "`arg` has no name", "write `arg \"attr\" ...`"));
+        return;
+    }
+    let (name, name_span) = names.remove(0);
+    if args.iter().any(|arg| arg.name == name) {
+        errors.push(err(
+            name_span,
+            format!("duplicate `arg` `{name}`"),
+            "each argument slot is declared once",
+        ));
+        return;
+    }
+    let Some(attr) = attrs.iter().find(|attr| attr.name == name) else {
+        errors.push(err(
+            name_span,
+            format!("`<{tag}>` has no attribute `{name}`"),
+            "an `arg` reads one of the element's own attributes",
+        ));
+        return;
+    };
+
+    let pin = prop(node, "pin", errors).map(|(template, _)| template);
+    let mut map: Vec<(String, String)> = Vec::new();
+    for child in children(node) {
+        match child.name().value() {
+            "map" => {
+                let strings = positional_strings(child, errors);
+                if strings.len() != 2 {
+                    errors.push(err(
+                        node_range(child),
+                        "`map` takes a spelling and an expression",
+                        "write `map \"128x64\" \"espforge_drivers::Oled128x64\"`",
+                    ));
+                    continue;
+                }
+                map.push((strings[0].0.clone(), strings[1].0.clone()));
+            }
+            other => errors.push(err(
+                node_range(child),
+                format!("unknown node `{other}` in `arg` `{name}`"),
+                "expected `map`",
+            )),
+        }
+    }
+
+    let direction = match prop(node, "direction", errors) {
+        Some((direction, direction_span)) => match direction.as_str() {
+            "input" => Direction::Input,
+            "output" => Direction::Output,
+            other => {
+                errors.push(err(
+                    direction_span,
+                    "`direction` must be `input` or `output`",
+                    format!("`{other}` is neither"),
+                ));
+                Direction::Output
+            }
+        },
+        None => Direction::Output,
+    };
+
+    match (&pin, map.is_empty()) {
+        (Some(_), false) => {
+            errors.push(err(
+                span,
+                format!("`arg \"{name}\"` has both `pin=` and a `map`"),
+                "a slot is either a claimed pin or a mapped value",
+            ));
+            return;
+        }
+        (None, true) => {
+            errors.push(err(
+                span,
+                format!("`arg \"{name}\"` has neither `pin=` nor a `map`"),
+                "write `pin=\"..{n}..\"` or `map \"spelling\" \"expression\"`",
+            ));
+            return;
+        }
+        _ => {}
+    }
+
+    if let Some(template) = &pin {
+        if !matches!(attr.kind, AttrKind::Ref { .. }) {
+            errors.push(err(
+                name_span,
+                format!("`{tag}.{name}` is `{}`", attr.kind.display()),
+                "a `pin` slot reads a `ref` attribute, usually to `gpio`",
+            ));
+        }
+        if !template.contains("{n}") {
+            errors.push(err(
+                span.clone(),
+                format!("`arg \"{name}\"` has no `{{n}}` in its `pin=`"),
+                "the claimed pin number is substituted for `{n}`",
+            ));
+        }
+    } else {
+        // Every value the attribute allows is mapped, and nothing else is:
+        // that is what keeps a `choice` from reaching emission unmapped.
+        let spellings: Vec<String> = match &attr.kind {
+            AttrKind::Choice(choices) => choices.clone(),
+            AttrKind::Bool => vec!["true".to_string(), "false".to_string()],
+            other => {
+                errors.push(err(
+                    name_span,
+                    format!("`{tag}.{name}` is `{}`", other.display()),
+                    "a `map` slot reads a `choice` or `bool` attribute",
+                ));
+                Vec::new()
+            }
+        };
+        for spelling in &spellings {
+            if !map.iter().any(|(mapped, _)| mapped == spelling) {
+                errors.push(err(
+                    span.clone(),
+                    format!("`arg \"{name}\"` has no mapping for `{spelling}`"),
+                    "every value the attribute allows needs a `map`",
+                ));
+            }
+        }
+        for (mapped, _) in &map {
+            if !spellings.is_empty() && !spellings.contains(mapped) {
+                errors.push(err(
+                    span.clone(),
+                    format!("`{mapped}` is not a value of `{tag}.{name}`"),
+                    format!("choices: {}", spellings.join(", ")),
+                ));
+            }
+        }
+    }
+
+    args.push(DeviceArg {
+        name,
+        map: (!map.is_empty()).then_some(map),
+        pin,
+        direction,
+        span,
+    });
 }
 
 fn parse_example(node: &KdlNode, examples: &mut Vec<Example>, errors: &mut Vec<SchemaError>) {
@@ -1302,7 +1807,11 @@ options {
         ] {
             assert!(schema.section_named(section).is_some(), "{section}");
         }
-        assert_eq!(schema.elements.len(), 23);
+        // The `# devices` elements live beside the drivers that implement
+        // them (`espforge-drivers/drivers.schema.kdl`), so this file is the
+        // core vocabulary only: 21 elements. The section stays, because a
+        // composed schema's devices refer to it.
+        assert_eq!(schema.elements.len(), 21);
         for tag in [
             "project",
             "chip",
@@ -1325,16 +1834,13 @@ options {
             "ws_client",
             "wss_client",
             "ntp",
-            "ssd1306",
-            "ili9341",
         ] {
             assert!(schema.element(tag).is_some(), "{tag}");
         }
-        // Five peripherals, six components, two displays and the five
-        // network services.
+        // Five peripherals, six components and the five network services.
         assert_eq!(schema.elements_in("peripherals").count(), 5);
         assert_eq!(schema.elements_in("components").count(), 6);
-        assert_eq!(schema.elements_in("devices").count(), 2);
+        assert_eq!(schema.elements_in("devices").count(), 0);
         assert_eq!(schema.elements_in("services").count(), 5);
 
         let gpio = schema.element("gpio").unwrap();

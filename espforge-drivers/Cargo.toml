@@ -25,6 +25,10 @@ ssd1306 = ["dep:ssd1306", "dep:embedded-graphics"]
 # same reason.
 ili9341 = ["dep:sky-ili9341", "dep:embedded-graphics"]
 
+# The I2C SCD4x CO2/temperature/humidity sensor driver (`Scd4x`). Blocking
+# only: its commands are plain bus transactions.
+scd4x = []
+
 # Drivers only build for esp targets, so keep esp-hal invisible to host builds.
 [target.'cfg(any(target_arch = "riscv32", target_arch = "xtensa"))'.dependencies]
 esp-hal = { version = "1", features = ["unstable"] }

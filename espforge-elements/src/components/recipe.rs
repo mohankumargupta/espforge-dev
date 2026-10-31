@@ -18,12 +18,13 @@
 use espf::context::ParsedNode;
 use espf::diag::node_span;
 use espforge_diagnostics::{DiagCode, codes};
-use espforge_schema::{AttrDef, AttrKind, Direction as RecipeDirection, Recipe, schema};
+use espforge_schema::{AttrDef, AttrKind, Direction as RecipeDirection, Recipe};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::attrs::{self, Issue};
 use crate::element::{Element, EmitCx, LowerCx, Lowered, Reported, is_rust_ident};
+use crate::schema::schema;
 use crate::model::{Board, ClaimedPin, Component, Direction, Ident, Owner, OwnerKind, Pin, PinUse};
 
 /// The interpreter for one schema element that declares a `recipe`.

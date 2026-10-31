@@ -8,9 +8,9 @@
 use espf::context::ParsedNode;
 use espf::diag::node_span;
 use espforge_diagnostics::{Diagnostic, codes};
-use espforge_schema::schema;
 
 use crate::element::{Element, LowerCx};
+use crate::schema::schema;
 use crate::model::{Board, Bus, Component, GpioDecl, Meta};
 use crate::registry;
 
@@ -1352,15 +1352,82 @@ mod tests {
     fn an_ssd1306_lowers_onto_its_i2c_component() {
         let board = lower_src(OLED).expect("the oled lowers");
         assert_eq!(board.devices.len(), 1);
-        let crate::model::Device::Ssd1306(oled) = &board.devices[0] else {
-            panic!("the device is an ssd1306");
-        };
+        let oled = &board.devices[0];
+        assert_eq!(oled.tag, "ssd1306");
         assert_eq!(oled.id.raw, "oled");
-        assert_eq!(oled.i2c_component.raw, "oled_bus");
-        assert_eq!(oled.size, crate::devices::ssd1306::OledSize::S128x32);
-        assert_eq!(oled.rotation, crate::devices::Rotation::R180);
-        assert!(board.uses_ssd1306());
-        assert!(!board.uses_ili9341());
+        assert_eq!(oled.bus_component.raw, "oled_bus");
+        // The recipe's slots are filled from the values as written.
+        assert_eq!(
+            oled.ty,
+            "espforge_drivers::Ssd1306Display<espforge_drivers::Oled128x32>"
+        );
+        assert_eq!(
+            oled.args,
+            [
+                "espforge_drivers::Oled128x32",
+                "espforge_drivers::DisplayRotation::Rotate180"
+            ]
+        );
+        assert_eq!(oled.feature, "ssd1306");
+        assert!(!oled.takes_bus);
+        assert_eq!(board.driver_features(), ["ssd1306"]);
+        assert_eq!(board.driver_deps(), ["embedded-graphics"]);
+    }
+
+    /// A display on the wrong component kind is refused: the recipe's bus
+    /// attribute names the tag it accepts (`to=` on the schema attribute), so
+    /// a typo cannot emit code that does not compile.
+    #[test]
+    fn an_ssd1306_on_an_spi_component_is_refused() {
+        let src = OLED
+            .replace(
+                "  <i2c id=\"i2c0\" sda=\"6\" scl=\"7\" />\n",
+                "  <spi id=\"spi2\" sclk=\"8\" mosi=\"7\" />\n",
+            )
+            .replace(
+                "<i2c_component id=\"oled_bus\" i2c=\"$i2c0\" address=\"0x3C\" />",
+                "<spi_component id=\"oled_bus\" spi=\"$spi2\" cs=\"9\" />",
+            );
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_UNKNOWN_COMPONENT);
+        assert_eq!(errors[0].message, "unknown bus component");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ssd1306 id=\"oled\"> refers to `oled_bus`, which is not an <i2c_component> in `# components`"
+        );
+    }
+
+    /// A value the schema does not allow is refused, quoting what it does
+    /// allow: the recipe maps spellings, so no unmapped value reaches emission.
+    #[test]
+    fn a_rotation_outside_the_choices_is_refused() {
+        let errors = lower_src(&OLED.replace("rotation=\"180\"", "rotation=\"45\"")).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_INVALID);
+        assert_eq!(errors[0].message, "invalid ssd1306");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ssd1306 id=\"oled\"> rotation=\"45\" must be one of 0, 90, 180, 270"
+        );
+    }
+
+    /// The sensor is a device with no auxiliary pin and no dependency of its
+    /// own: its project must not pull the graphics crate the displays need.
+    #[test]
+    fn a_scd4x_lowers_onto_its_i2c_component() {
+        let src = OLED.replace(
+            "<ssd1306 id=\"oled\" i2c_component=\"$oled_bus\" size=\"128x32\" rotation=\"180\" />",
+            "<scd4x id=\"air\" i2c_component=\"$oled_bus\" />",
+        );
+        let board = lower_src(&src).expect("the sensor lowers");
+        let air = &board.devices[0];
+        assert_eq!(air.tag, "scd4x");
+        assert_eq!(air.id.raw, "air");
+        assert_eq!(air.ty, "espforge_drivers::Scd4x");
+        assert_eq!(air.new, "espforge_drivers::Scd4x::new");
+        assert!(air.args.is_empty());
+        assert!(air.pins.is_empty());
+        assert_eq!(board.driver_features(), ["scd4x"]);
+        assert!(board.driver_deps().is_empty());
     }
 
     #[test]
@@ -1400,7 +1467,7 @@ mod tests {
         assert_eq!(errors[0].code, codes::DEVICE_UNSUPPORTED);
         assert_eq!(
             errors[0].message,
-            "`<st7789>` is not a known element in `# devices`; known: `<ssd1306>`, `<ili9341>`"
+            "`<st7789>` is not a known element in `# devices`; known: `<ssd1306>`, `<ili9341>`, `<scd4x>`"
         );
     }
 
@@ -1423,23 +1490,33 @@ mod tests {
     fn an_ili9341_lowers_and_claims_its_control_pins() {
         let board = lower_src(TFT).expect("the tft lowers");
         assert_eq!(board.devices.len(), 1);
-        let crate::model::Device::Ili9341(tft) = &board.devices[0] else {
-            panic!("the device is an ili9341");
-        };
+        let tft = &board.devices[0];
+        assert_eq!(tft.tag, "ili9341");
         assert_eq!(tft.id.raw, "tft");
-        assert_eq!(tft.spi_component.raw, "tft_bus");
-        assert_eq!((tft.dc.pin().0, tft.reset.pin().0), (4, 5));
-        assert_eq!(tft.backlight.as_ref().map(|pin| pin.pin().0), Some(6));
-        assert_eq!(tft.rotation, crate::devices::Rotation::R90);
-        assert!(!tft.rgb);
+        assert_eq!(tft.bus_component.raw, "tft_bus");
+        let pins: Vec<(&str, u8)> = tft
+            .pins
+            .iter()
+            .map(|(arg, pin)| (arg.as_str(), pin.pin().0))
+            .collect();
+        assert_eq!(pins, [("dc", 4), ("reset", 5), ("backlight", 6)]);
         for pin in [4, 5, 6] {
             let claim = board.resources.claim_of(Pin(pin)).unwrap();
             assert_eq!(claim.owner.kind, OwnerKind::Device("ili9341"));
             assert_eq!(claim.need, PinUse::Output);
         }
-        assert!(board.takes_spi_component(&Ident::new("tft_bus", 0..0)));
-        assert!(board.uses_ili9341());
-        assert!(!board.uses_ssd1306());
+        assert!(tft.takes_bus);
+        // The control lines are the recipe's pin templates, filled in.
+        assert_eq!(
+            tft.args[0],
+            "esp_hal::gpio::Output::new(unsafe { registry.peripherals.GPIO4.clone_unchecked() }, esp_hal::gpio::Level::Low, esp_hal::gpio::OutputConfig::default())"
+        );
+        // An optional pin is an `Option` the driver takes.
+        assert!(tft.args[2].starts_with("Some("), "{}", tft.args[2]);
+        assert_eq!(tft.args[3], "espforge_drivers::Orientation::Landscape");
+        assert_eq!(tft.args[4], "espforge_drivers::ColorOrder::Bgr");
+        assert!(board.takes_component(&Ident::new("tft_bus", 0..0)));
+        assert_eq!(board.driver_features(), ["ili9341"]);
     }
 
     #[test]
@@ -1469,10 +1546,9 @@ mod tests {
     fn a_tft_without_a_backlight_still_lowers() {
         let src = TFT.replace(" backlight=\"$gpio6\"", "");
         let board = lower_src(&src).expect("backlight is optional");
-        let crate::model::Device::Ili9341(tft) = &board.devices[0] else {
-            panic!("the device is an ili9341");
-        };
-        assert!(tft.backlight.is_none());
+        let tft = &board.devices[0];
+        assert_eq!(tft.pins.len(), 2, "only dc and reset are claimed");
+        assert_eq!(tft.args[2], "None");
     }
 
     #[test]

@@ -607,8 +607,6 @@ mod tests {
     use super::*;
     use crate::codegen::test_support::case;
     use espforge_elements::components::recipe::RecipeComponent;
-    use espforge_elements::devices::Rotation;
-    use espforge_elements::devices::ssd1306::{OledSize, Ssd1306Device};
     use espforge_elements::{Component, Ident, Owner, OwnerKind, Pin, PinUse, ResourceGraph};
 
     /// `blink`: one LED on GPIO18.
@@ -668,14 +666,22 @@ mod tests {
     fn a_display_fills_the_devices_struct() {
         let case = case("esp32c3", Runtime::Blocking, true, &[], &[]);
         let mut board = empty_board(&case);
-        board
-            .devices
-            .push(espforge_elements::Device::Ssd1306(Ssd1306Device {
-                id: Ident::new("oled", 0..0),
-                i2c_component: Ident::new("oled_bus", 0..0),
-                size: OledSize::S128x64,
-                rotation: Rotation::R0,
-            }));
+        board.devices.push(espforge_elements::Device {
+            id: Ident::new("oled", 0..0),
+            tag: "ssd1306",
+            bus_component: Ident::new("oled_bus", 0..0),
+            feature: "ssd1306".into(),
+            deps: vec!["embedded-graphics".into()],
+            ty: "espforge_drivers::Ssd1306Display<espforge_drivers::Oled128x64>".into(),
+            new: "espforge_drivers::Ssd1306Display::new".into(),
+            takes_bus: false,
+            taken: None,
+            pins: Vec::new(),
+            args: vec![
+                "espforge_drivers::Oled128x64".into(),
+                "espforge_drivers::DisplayRotation::Rotate0".into(),
+            ],
+        });
         let parts = collect(&board);
         let text = generated(&parts, &case.meta).unwrap();
         assert!(

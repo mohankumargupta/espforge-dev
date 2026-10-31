@@ -15,6 +15,7 @@ pub mod element;
 pub mod lower;
 pub mod peripherals;
 pub mod registry;
+pub mod schema;
 
 /// One `Attrs` struct per element in `espf.schema.kdl`, written by `build.rs`.
 ///

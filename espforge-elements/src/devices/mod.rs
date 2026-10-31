@@ -3,58 +3,27 @@
 //! A device refers *down* to the component it is attached to
 //! (`i2c_component=`, `spi_component=`) and, for its auxiliary control lines,
 //! to `<gpio>` peripherals. It never names a bus pin directly. The shared
-//! wording of its diagnostics lives here, so the element files differ only in
-//! what makes them different.
+//! wording of its diagnostics lives here, so a driver's lowering differs only
+//! in the data its recipe carries.
 //!
-//! The drivers are blocking-only: [`Rotation`] is rendered into the driver's
-//! own orientation type, and a display declared under the embassy runtime is
-//! refused with [`requires_blocking`] rather than producing code that cannot
-//! compile.
+//! The drivers are blocking-only: a display or sensor declared under the
+//! embassy runtime is refused with [`requires_blocking`] rather than producing
+//! code that cannot compile.
 
-pub mod ili9341;
-pub mod ssd1306;
+pub mod recipe;
 
 use espf::context::ParsedNode;
 use espf::diag::node_span;
 use espforge_diagnostics::codes;
-use proc_macro2::TokenStream;
-use quote::quote;
+use espforge_schema::{AttrKind, Element as ElementDef};
+use std::ops::Range;
 
 use crate::attrs::Issue;
 use crate::element::{LowerCx, Reported};
-use crate::model::Ident;
-
-/// A display rotation in degrees clockwise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Rotation {
-    R0,
-    R90,
-    R180,
-    R270,
-}
-
-/// The SSD1306 rotation for this value.
-pub(crate) fn oled_rotation(rotation: Rotation) -> TokenStream {
-    match rotation {
-        Rotation::R0 => quote! { espforge_drivers::DisplayRotation::Rotate0 },
-        Rotation::R90 => quote! { espforge_drivers::DisplayRotation::Rotate90 },
-        Rotation::R180 => quote! { espforge_drivers::DisplayRotation::Rotate180 },
-        Rotation::R270 => quote! { espforge_drivers::DisplayRotation::Rotate270 },
-    }
-}
-
-/// The `sky-ili9341` orientation for this rotation.
-pub(crate) fn tft_orientation(rotation: Rotation) -> TokenStream {
-    match rotation {
-        Rotation::R0 => quote! { espforge_drivers::Orientation::Portrait },
-        Rotation::R90 => quote! { espforge_drivers::Orientation::Landscape },
-        Rotation::R180 => quote! { espforge_drivers::Orientation::PortraitFlipped },
-        Rotation::R270 => quote! { espforge_drivers::Orientation::LandscapeFlipped },
-    }
-}
+use crate::model::{Direction, Ident};
 
 /// The value span of one attribute on `node`, or the node itself.
-pub(crate) fn span_of(node: &ParsedNode<'_>, attr: &str) -> std::ops::Range<usize> {
+pub(crate) fn span_of(node: &ParsedNode<'_>, attr: &str) -> Range<usize> {
     node.get_attr_spanned(attr)
         .map(|a| a.val_offset..a.val_offset + a.val.len())
         .unwrap_or_else(|| node_span(node))
@@ -80,10 +49,14 @@ pub(crate) fn invalid_id(
 }
 
 /// A schema-level problem (missing or invalid attribute).
+///
+/// The wording is the one the hand-written device elements used: the message
+/// names the attribute as written, and quotes the values the schema allows.
 pub(crate) fn invalid_element(
     cx: &mut LowerCx,
     node: &ParsedNode<'_>,
     tag: &str,
+    element: &ElementDef,
     issue: Issue<'_>,
 ) -> Reported {
     let id = node.id;
@@ -92,13 +65,10 @@ pub(crate) fn invalid_element(
             format!("<{tag} id=\"{id}\"> is missing `{attr}`")
         }
         Issue::Invalid { attr, value } => {
-            let expected = match attr {
-                "rotation" => "one of 0, 90, 180, 270",
-                "size" => "128x64 or 128x32",
-                "rgb" => "true or false",
-                _ => "a valid value",
-            };
-            format!("<{tag} id=\"{id}\"> {attr}=\"{value}\" must be {expected}")
+            format!(
+                "<{tag} id=\"{id}\"> {attr}=\"{value}\" must be {}",
+                expected(element, attr)
+            )
         }
     };
     cx.report(
@@ -109,8 +79,26 @@ pub(crate) fn invalid_element(
     )
 }
 
+/// The values an attribute accepts, in the wording the schema's own listing
+/// uses: `true or false`, `128x64 or 128x32`, `one of 0, 90, 180, 270`.
+fn expected(element: &ElementDef, attr: &str) -> String {
+    match element
+        .attrs
+        .iter()
+        .find(|declared| declared.name == attr)
+        .map(|declared| &declared.kind)
+    {
+        Some(AttrKind::Bool) => "true or false".to_string(),
+        Some(AttrKind::Choice(choices)) if choices.len() == 2 => {
+            format!("{} or {}", choices[0], choices[1])
+        }
+        Some(AttrKind::Choice(choices)) => format!("one of {}", choices.join(", ")),
+        _ => "a valid value".to_string(),
+    }
+}
+
 /// A `i2c_component=` / `spi_component=` reference to a component that is not
-/// on the board.
+/// on the board, or one of the wrong kind.
 pub(crate) fn unknown_component(
     cx: &mut LowerCx,
     node: &ParsedNode<'_>,
@@ -154,7 +142,7 @@ pub(crate) fn unknown_gpio(
     )
 }
 
-/// A device auxiliary pin on a GPIO declared as an input.
+/// A device auxiliary pin on a GPIO declared as the other direction.
 pub(crate) fn wrong_direction(
     cx: &mut LowerCx,
     node: &ParsedNode<'_>,
@@ -162,29 +150,40 @@ pub(crate) fn wrong_direction(
     id: &Ident,
     attr: &str,
     name: &str,
+    wanted: Direction,
+    found: Direction,
 ) -> Reported {
+    let found = match found {
+        Direction::Input => "input",
+        Direction::Output => "output",
+    };
+    let wanted = match wanted {
+        Direction::Input => "input",
+        Direction::Output => "output",
+    };
     cx.report(
         codes::DEVICE_WRONG_DIRECTION,
         span_of(node, attr),
         "wrong gpio direction",
         format!(
-            "<{tag} id=\"{}\"> needs an output pin, but `{name}` has direction=\"input\"",
+            "<{tag} id=\"{}\"> needs an {wanted} pin, but `{name}` has direction=\"{found}\"",
             id.raw
         ),
     )
 }
 
-/// A blocking-only display declared under the embassy runtime.
+/// A blocking-only driver declared under the embassy runtime.
 pub(crate) fn requires_blocking(
     cx: &mut LowerCx,
     node: &ParsedNode<'_>,
     tag: &str,
     id: &Ident,
+    kind: &str,
 ) -> Reported {
     cx.report(
         codes::DEVICE_REQUIRES_BLOCKING,
         node_span(node),
-        "display requires blocking",
+        format!("{kind} requires blocking"),
         format!(
             "<{tag} id=\"{}\"> needs the blocking runtime; change \
              <runtime type=\"..\" /> to blocking",

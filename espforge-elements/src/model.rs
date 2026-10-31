@@ -11,6 +11,8 @@
 //! their buses. Recipe components share the one [`OwnerKind::Recipe`] variant.
 
 use espforge_diagnostics::Diagnostic;
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -512,6 +514,24 @@ component_enum! {
     WifiStation(crate::components::wifi_station::WifiStationComponent),
 }
 
+impl Component {
+    /// The schema tag of the element this component came from.
+    ///
+    /// A recipe carries its own tag; the hand-written components are fixed. A
+    /// device's recipe compares this against the component kind it declares it
+    /// accepts, so a display on the wrong bus is a refusal rather than emitted
+    /// code that does not compile.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Component::Recipe(component) => component.tag,
+            Component::I2c(_) => "i2c_component",
+            Component::Spi(_) => "spi_component",
+            Component::Uart(_) => "uart_component",
+            Component::WifiStation(_) => "wifi_station",
+        }
+    }
+}
+
 /// One line per service variant generates [`Service::id`] and the
 /// [`Lowered`](crate::Lowered) forwarding, so a new service is its own file
 /// plus its own line here — the same shape as `component_enum!`.
@@ -555,44 +575,106 @@ service_enum! {
     Ntp(crate::services::ntp::NtpService),
 }
 
-/// One line per device variant generates [`Device::id`] and the
-/// [`Lowered`](crate::Lowered) forwarding, so a new device is its own file
-/// plus its own line here — the same shape as `component_enum!`.
-macro_rules! device_enum {
-    ($($variant:ident($ty:ty)),* $(,)?) => {
-        /// A device in the board: a driver for a specific part, bound to a
-        /// component and (for auxiliary lines) to `<gpio>` peripherals.
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub enum Device {
-            $($variant($ty)),*
-        }
-
-        impl Device {
-            /// The device's id.
-            pub fn id(&self) -> &Ident {
-                match self {
-                    $(Device::$variant(d) => crate::element::Lowered::id(d),)*
-                }
-            }
-        }
-
-        impl crate::element::Lowered for Device {
-            fn id(&self) -> &Ident {
-                self.id()
-            }
-
-            fn emit(&self, board: &Board, cx: &mut crate::element::EmitCx) {
-                match self {
-                    $(Device::$variant(d) => d.emit(board, cx),)*
-                }
-            }
-        }
-    };
+/// A device in the board: a driver for a specific part, bound to the component
+/// it is attached to and (for auxiliary lines) to `<gpio>` peripherals.
+///
+/// Every `device_recipe` lowers to this shape, and a hand-written `Element`
+/// can build one too, so a driver that needs its own Rust file still emits its
+/// `Devices` field and initialiser the same way. The recipe is data: the type,
+/// the constructor and the arguments are strings the schema itself supplied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub id: Ident,
+    /// The schema tag, which names the recipe that built this.
+    pub tag: &'static str,
+    /// The `<i2c_component>` / `<spi_component>` whose handle it drives.
+    pub bus_component: Ident,
+    /// The `espforge-drivers` feature the generated project names.
+    pub feature: String,
+    /// Crates the generated project must name because of this driver.
+    pub deps: Vec<String>,
+    /// The `Devices` field type, its value slots already filled.
+    pub ty: String,
+    /// The Rust path of the constructor.
+    pub new: String,
+    /// Whether the device takes the bus component by value.
+    pub takes_bus: bool,
+    /// The `expect` message when that bus was already taken.
+    pub taken: Option<String>,
+    /// The auxiliary pins it claimed, with the argument each one fills.
+    pub pins: Vec<(String, ClaimedPin)>,
+    /// The Rust expressions passed to the constructor after the bus.
+    pub args: Vec<String>,
 }
 
-device_enum! {
-    Ssd1306(crate::devices::ssd1306::Ssd1306Device),
-    Ili9341(crate::devices::ili9341::Ili9341Device),
+impl Device {
+    /// The device's id.
+    pub fn id(&self) -> &Ident {
+        &self.id
+    }
+
+    /// Whether this device consumes `component`'s handle, so that component
+    /// emits its field as an `Option` the device takes at construction.
+    pub fn takes(&self, component: &Ident) -> bool {
+        self.takes_bus && self.bus_component.raw == component.raw
+    }
+}
+
+impl crate::element::Lowered for Device {
+    fn id(&self) -> &Ident {
+        &self.id
+    }
+
+    fn emit(&self, _board: &Board, cx: &mut crate::element::EmitCx) {
+        let name = format_ident!("{}", self.id.rust_name());
+        let ty: TokenStream = self
+            .ty
+            .parse()
+            .expect("a device field type is a Rust type expression");
+        let new: TokenStream = self
+            .new
+            .parse()
+            .expect("a device constructor is a Rust path");
+        let bus = format_ident!("{}", self.bus_component.rust_name());
+        let bus = if self.takes_bus {
+            let taken = self
+                .taken
+                .as_deref()
+                .unwrap_or("the device's bus was already taken");
+            quote! { components.#bus.take().expect(#taken) }
+        } else {
+            quote! { components.#bus }
+        };
+        let args: Vec<TokenStream> = self
+            .args
+            .iter()
+            .map(|arg| {
+                arg.parse()
+                    .expect("a device argument is a Rust expression")
+            })
+            .collect();
+
+        cx.device_field(quote! {
+            pub #name: #ty,
+        });
+        cx.device_init(quote! {
+            #name: #new(#bus, #(#args),*),
+        });
+        // The same note the hand-written display carried: the pins were
+        // claimed through `<gpio>` references, so no other element has them.
+        if !self.pins.is_empty() {
+            let pins = self
+                .pins
+                .iter()
+                .map(|(_, pin)| format!("GPIO{}", pin.pin().0))
+                .collect::<Vec<_>>()
+                .join("/");
+            cx.safety_comment(
+                format!("{name}: {}(", self.new),
+                format!("SAFETY: espforge checked that no other component uses {pins}."),
+            );
+        }
+    }
 }
 
 /// Everything the emitters need: the project settings, the resources it owns,
@@ -645,30 +727,42 @@ impl Board {
             .any(|service| matches!(service, Service::Ntp(_)))
     }
 
-    /// Whether an SSD1306 OLED display is declared.
-    pub fn uses_ssd1306(&self) -> bool {
+    /// The driver features the project needs, in declaration order and without
+    /// duplicates: what the generated `Cargo.toml` asks `espforge-drivers` for.
+    ///
+    /// Source order, not sorted: the emitted feature array keeps the order the
+    /// devices were declared in, which is what makes a golden diff readable.
+    pub fn driver_features(&self) -> Vec<&str> {
         self.devices
             .iter()
-            .any(|device| matches!(device, Device::Ssd1306(_)))
+            .map(|device| device.feature.as_str())
+            .fold(Vec::new(), |mut out, feature| {
+                if !out.contains(&feature) {
+                    out.push(feature);
+                }
+                out
+            })
     }
 
-    /// Whether an ILI9341 TFT display is declared.
-    pub fn uses_ili9341(&self) -> bool {
+    /// Crates the declared drivers need the project to name, in declaration
+    /// order and without duplicates (`embedded-graphics` for a display). A
+    /// device whose recipe names no dependency adds none.
+    pub fn driver_deps(&self) -> Vec<&str> {
         self.devices
             .iter()
-            .any(|device| matches!(device, Device::Ili9341(_)))
+            .flat_map(|device| device.deps.iter().map(String::as_str))
+            .fold(Vec::new(), |mut out, dep| {
+                if !out.contains(&dep) {
+                    out.push(dep);
+                }
+                out
+            })
     }
 
-    /// Whether an `<ili9341>` took this `<spi_component>` over: the display
-    /// owns its SPI device, so the component's `Components` field is an
-    /// `Option` the device takes at construction.
-    pub fn takes_spi_component(&self, id: &Ident) -> bool {
-        self.devices.iter().any(|device| match device {
-            // The ids are the same text from different nodes, so their spans
-            // differ: compare the spelling, not the span.
-            Device::Ili9341(tft) => tft.spi_component.raw == id.raw,
-            Device::Ssd1306(_) => false,
-        })
+    /// Whether a device takes this component's handle: the component then
+    /// emits its field as an `Option` the device takes at construction.
+    pub fn takes_component(&self, id: &Ident) -> bool {
+        self.devices.iter().any(|device| device.takes(id))
     }
 }
 

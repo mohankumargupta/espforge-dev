@@ -4,7 +4,10 @@
 //! runtime, and setting them by hand is a resolver error. So the fixture takes
 //! the runtime and the peripheral list, not an option flag for them.
 
-use espforge_elements::{Answers, Console, DerivedInputs, Meta, ResolvedOptions, Runtime, resolve};
+use espforge_elements::{
+    Answers, Console, DerivedInputs, Device, Ident, Meta, ResolvedOptions, ResourceGraph, Runtime,
+    Board, resolve,
+};
 use espforge_schema::schema;
 
 use super::chip::Chip;
@@ -51,6 +54,38 @@ pub fn case(
 
 pub fn chip(name: &str) -> Chip {
     Chip::resolve(name).unwrap()
+}
+
+/// A board with no hardware: enough for a backend that only reads `meta`.
+pub fn board() -> Board {
+    Board {
+        meta: meta("esp32c3"),
+        resources: ResourceGraph::default(),
+        components: Vec::new(),
+        devices: Vec::new(),
+        services: Vec::new(),
+        warnings: Vec::new(),
+    }
+}
+
+/// One lowered device, as a `device_recipe` builds it.
+///
+/// Only the two fields a manifest reads are interesting here: the feature the
+/// project asks `espforge-drivers` for, and the crates the driver needs named.
+pub fn device(feature: &'static str, deps: &[&str]) -> Device {
+    Device {
+        id: Ident::new(feature, 0..0),
+        tag: feature,
+        bus_component: Ident::new("bus", 0..0),
+        feature: feature.to_string(),
+        deps: deps.iter().map(|dep| (*dep).to_string()).collect(),
+        ty: format!("espforge_drivers::{feature}"),
+        new: format!("espforge_drivers::{feature}::new"),
+        takes_bus: false,
+        taken: None,
+        pins: Vec::new(),
+        args: Vec::new(),
+    }
 }
 
 /// The project settings every fixture starts from.
