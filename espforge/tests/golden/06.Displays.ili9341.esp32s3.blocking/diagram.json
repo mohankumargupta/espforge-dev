@@ -12,7 +12,7 @@
     [ "esp:3V3.1", "tft1:VCC", "red", [ "h0" ] ],
     [ "esp:GND.1", "tft1:GND", "black", [ "h0" ] ],
     [ "esp:6", "tft1:LED", "orange", [ "h0" ] ],
-    [ "esp:4", "tft1:DC", "blue", [ "h0" ] ],
+    [ "esp:4", "tft1:D/C", "blue", [ "h0" ] ],
     [ "esp:5", "tft1:RST", "purple", [ "h0" ] ],
     [ "esp:9", "tft1:CS", "green", [ "h0" ] ],
     [ "esp:7", "tft1:MOSI", "magenta", [ "h0" ] ],

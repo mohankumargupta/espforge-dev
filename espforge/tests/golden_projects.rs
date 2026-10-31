@@ -121,9 +121,10 @@ fn runtime_name(runtime: Runtime) -> &'static str {
 
 /// Generate one cell into `out`.
 fn generate_cell(cell: &Cell, out: &Path) {
-    let source = resolve_source(None, Some(&cell.example_path())).unwrap_or_else(|e| {
-        panic!("resolving example {}: {e}", cell.example_path());
-    });
+    let source =
+        resolve_source(None, Some(&cell.example_path()), Path::new(".")).unwrap_or_else(|e| {
+            panic!("resolving example {}: {e}", cell.example_path());
+        });
     let overrides = Overrides {
         chip: Some(cell.chip.clone()),
         runtime: Some(cell.runtime),

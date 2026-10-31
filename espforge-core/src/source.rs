@@ -1,10 +1,11 @@
-//! Where an ESPF spec comes from: a file or an embedded example.
+//! Where an ESPF spec comes from: a file, an embedded example, or the single
+//! `.espf` in a directory.
 //!
-//! In this slice there is no current-directory discovery: a caller gives a
-//! FILE or `--example`. App logic and overlay files come from the example
-//! (embedded) or from next to the file, including a custom Wokwi chip:
-//! `chip.json` and `chip.wasm` always, and the `chip/` Zig sources only when
-//! `keep-zig-source` is on.
+//! Discovery takes the directory it looks in, never `$PWD`: the binary passes
+//! `.`, tests pass a scratch directory. App logic and overlay files come from
+//! the example (embedded) or from next to the file, including a custom Wokwi
+//! chip: `chip.json` and `chip.wasm` always, and the `chip/` Zig sources only
+//! when `keep-zig-source` is on.
 
 use anyhow::Result;
 use espforge_emit::RuntimeSource;
@@ -35,17 +36,72 @@ pub fn from_file(file: &Path) -> Result<Source, String> {
     })
 }
 
-/// FILE or `--example`, never both and never neither.
-pub fn resolve_source(file: Option<&Path>, example: Option<&str>) -> Result<Source, String> {
+/// The single `.espf` / `.espf.txt` directly inside `dir`.
+///
+/// Top-level only: a generated project keeps its own copy of the spec under
+/// `build/.espforge/`, which is not something to discover as project source.
+pub fn discover_in_dir(dir: &Path) -> Result<Source, String> {
+    if !dir.is_dir() {
+        return Err(format!("'{}' is not a directory", dir.display()));
+    }
+
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("cannot read '{}': {e}", dir.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".espf") || name.ends_with(".espf.txt"))
+        })
+        .collect();
+    found.sort();
+
+    match found.len() {
+        1 => from_file(&found[0]),
+        0 => Err(format!(
+            "no .espf or .espf.txt file found in '{}'\n   Give a FILE or --example <example>, or run `espforge new <example> <dir>` to start a project.",
+            dir.display()
+        )),
+        _ => {
+            let list = found
+                .iter()
+                .map(|path| {
+                    format!(
+                        "  - {}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(format!(
+                "multiple ESPF files found in '{}':\n{list}\n   Name the one you want, e.g. `espforge gen {}`.",
+                dir.display(),
+                found[0].display()
+            ))
+        }
+    }
+}
+
+/// FILE, `--example`, or the single `.espf` in `cwd`, never two at once.
+///
+/// An embedded example may be given as `category/name` or by a unique short
+/// name; `cwd` is the directory bare invocations look in.
+pub fn resolve_source(
+    file: Option<&Path>,
+    example: Option<&str>,
+    cwd: &Path,
+) -> Result<Source, String> {
     match (file, example) {
         (Some(_), Some(_)) => Err("give either FILE or --example, not both".to_string()),
-        (Some(f), None) => from_file(f),
-        (None, None) => Err("give a FILE or --example <category/name>".to_string()),
-        (None, Some(path)) => {
-            let ex = espforge_examples::find(path)
-                .ok_or_else(|| format!("no example '{path}'; it must be <category>/<name>"))?;
+        (Some(path), None) if path.is_dir() => discover_in_dir(path),
+        (Some(path), None) => from_file(path),
+        (None, None) => discover_in_dir(cwd),
+        (None, Some(name)) => {
+            let (category, ex) = espforge_examples::resolve_name(name)?;
             Ok(Source {
-                name: format!("embedded:{path}"),
+                name: format!("embedded:{category}/{}", ex.name),
                 text: ex.content.clone(),
                 dir: None,
                 example: Some(ex),
@@ -171,17 +227,64 @@ pub fn runtime_source(runtime_path: Option<PathBuf>) -> Result<RuntimeSource, St
 mod tests {
     use super::*;
 
+    fn scratch() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    fn write_hello(dir: &Path) -> PathBuf {
+        let hello = espforge_examples::find("01.Basics/helloworld").unwrap();
+        let file = dir.join("hello.espf");
+        std::fs::write(&file, &hello.content).unwrap();
+        file
+    }
+
     #[test]
-    fn file_and_example_together_or_neither_are_rejected() {
-        assert!(resolve_source(Some(Path::new("x.espf")), Some("01.Basics/helloworld")).is_err());
-        let err = resolve_source(None, None).err().unwrap();
-        assert!(err.contains("FILE or --example"), "{err}");
-        assert!(resolve_source(None, Some("no/such")).is_err());
+    fn file_and_example_together_are_rejected() {
+        let cwd = scratch();
+        assert!(
+            resolve_source(
+                Some(Path::new("x.espf")),
+                Some("01.Basics/helloworld"),
+                cwd.path()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn an_empty_directory_has_no_source_to_discover() {
+        let cwd = scratch();
+        let err = resolve_source(None, None, cwd.path()).err().unwrap();
+        assert!(err.contains("no .espf"), "{err}");
+        assert!(err.contains("espforge new"), "{err}");
+    }
+
+    #[test]
+    fn discovery_takes_the_single_espf_in_the_directory() {
+        let cwd = scratch();
+        let file = write_hello(cwd.path());
+        let src = resolve_source(None, None, cwd.path()).unwrap();
+        assert_eq!(src.name, file.to_string_lossy());
+        assert_eq!(src.dir.as_deref(), Some(cwd.path()));
+
+        // A directory argument discovers the same way.
+        let src = resolve_source(Some(cwd.path()), None, Path::new(".")).unwrap();
+        assert_eq!(src.name, file.to_string_lossy());
+    }
+
+    #[test]
+    fn several_espf_files_are_named_back_to_the_user() {
+        let cwd = scratch();
+        write_hello(cwd.path());
+        std::fs::write(cwd.path().join("second.espf"), "# espforge\n").unwrap();
+        let err = resolve_source(None, None, cwd.path()).err().unwrap();
+        assert!(err.contains("multiple ESPF files"), "{err}");
+        assert!(err.contains("second.espf"), "{err}");
     }
 
     #[test]
     fn an_example_source_carries_its_text_and_files() {
-        let src = resolve_source(None, Some("01.Basics/helloworld")).unwrap();
+        let src = resolve_source(None, Some("01.Basics/helloworld"), Path::new(".")).unwrap();
         assert_eq!(src.name, "embedded:01.Basics/helloworld");
         assert!(src.text.contains("# espforge"));
         assert!(src.dir.is_none());
@@ -196,8 +299,14 @@ mod tests {
     }
 
     #[test]
+    fn a_short_example_name_resolves_to_its_category_key() {
+        let src = resolve_source(None, Some("blink"), Path::new(".")).unwrap();
+        assert_eq!(src.name, "embedded:01.Basics/blink");
+    }
+
+    #[test]
     fn find_app_prefers_src_app_rs() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = scratch();
         assert!(find_app(dir.path()).is_none());
         std::fs::create_dir_all(dir.path().join("app/rust")).unwrap();
         std::fs::write(dir.path().join("app/rust/app.rs"), "").unwrap();
@@ -209,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_runtime_path_must_be_a_directory() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = scratch();
         let ok = runtime_source(Some(dir.path().to_path_buf())).unwrap();
         assert!(matches!(ok, RuntimeSource::Path(_)));
         assert!(runtime_source(Some(dir.path().join("nope"))).is_err());

@@ -39,7 +39,7 @@ fn check_example(case: &Case, runtime: &Path, target_dir: &Path) {
     } = case;
     let scratch = tempfile::tempdir().expect("create scratch dir");
     let out = scratch.path().join("out");
-    let mut source = resolve_source(None, Some(example)).expect("embedded example");
+    let mut source = resolve_source(None, Some(example), Path::new(".")).expect("embedded example");
     if let Some(text) = inline {
         source.name = format!("inline:{example}:{chip}");
         source.text = (*text).to_string();

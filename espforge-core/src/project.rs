@@ -76,6 +76,23 @@ pub fn generate_with(
     write_checked(source, &checked, out, runtime_path)
 }
 
+/// Everything generation reads and validates, without writing anything.
+///
+/// This is the spec pipeline plus the app logic and overlay files. It stops
+/// before [`espforge_emit::generate_from_board`], so a passing check does not
+/// promise that generation or writing succeeds (an unsupported overlay
+/// placeholder, an edited generated file): callers must not promise a
+/// buildable project from it alone.
+///
+/// Pure apart from reading the user's directory.
+pub fn check(source: &Source, overrides: &Overrides) -> Result<Vec<String>, ProjectError> {
+    let checked = pipeline::validate(&source.text, overrides)?;
+    crate::source::app_logic(source).map_err(ProjectError::User)?;
+    crate::source::overlay_files(source, checked.resolved.is_on("keep-zig-source"))
+        .map_err(ProjectError::User)?;
+    Ok(checked.notes)
+}
+
 /// Emit and write an already validated spec.
 pub fn write_checked(
     source: &Source,
@@ -143,7 +160,7 @@ mod tests {
 
     #[test]
     fn generate_writes_every_helloworld_file() {
-        let source = resolve_source(None, Some("01.Basics/helloworld")).unwrap();
+        let source = resolve_source(None, Some("01.Basics/helloworld"), Path::new(".")).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out");
         let written = generate(&source, &out).unwrap();
@@ -178,7 +195,7 @@ mod tests {
 
     #[test]
     fn rebuilding_is_fine_but_edited_owned_files_are_refused() {
-        let source = resolve_source(None, Some("01.Basics/helloworld")).unwrap();
+        let source = resolve_source(None, Some("01.Basics/helloworld"), Path::new(".")).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out");
         generate(&source, &out).unwrap();
@@ -192,7 +209,7 @@ mod tests {
 
     #[test]
     fn flags_override_the_file_in_the_output() {
-        let source = resolve_source(None, Some("01.Basics/helloworld")).unwrap();
+        let source = resolve_source(None, Some("01.Basics/helloworld"), Path::new(".")).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out");
         let overrides = Overrides {
@@ -214,7 +231,7 @@ mod tests {
 
     #[test]
     fn bad_flags_are_user_errors() {
-        let source = resolve_source(None, Some("01.Basics/helloworld")).unwrap();
+        let source = resolve_source(None, Some("01.Basics/helloworld"), Path::new(".")).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out");
         let overrides = Overrides {
@@ -229,7 +246,7 @@ mod tests {
 
     #[test]
     fn spec_errors_are_located() {
-        let source = resolve_source(None, Some("01.Basics/helloworld")).unwrap();
+        let source = resolve_source(None, Some("01.Basics/helloworld"), Path::new(".")).unwrap();
         let bad = Source {
             name: source.name.clone(),
             text: source.text.replace("esp32c3", "esp99"),
@@ -243,5 +260,22 @@ mod tests {
             }
             other => panic!("expected located spec errors, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn check_accepts_a_good_project_and_rejects_a_missing_app() {
+        let source = resolve_source(None, Some("01.Basics/helloworld"), Path::new(".")).unwrap();
+        let notes = check(&source, &Overrides::default()).unwrap();
+        assert!(notes.is_empty());
+
+        // The same spec on disk, with no app logic beside it.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hello.espf");
+        std::fs::write(&file, &source.text).unwrap();
+        let source = crate::source::from_file(&file).unwrap();
+        assert!(matches!(
+            check(&source, &Overrides::default()),
+            Err(ProjectError::User(message)) if message.contains("app logic")
+        ));
     }
 }

@@ -6,6 +6,13 @@
 
 use espforge_diagnostics::{Diagnostic, to_human};
 
+/// Print the `note:` and warning lines a command produced.
+pub fn notes(notes: &[String]) {
+    for note in notes {
+        eprintln!("{note}");
+    }
+}
+
 /// Print each diagnostic as a snippet block, then a one-line summary.
 pub fn diagnostics(name: &str, src: &str, diagnostics: &[Diagnostic]) {
     eprintln!("{}", to_human(name, src, diagnostics));

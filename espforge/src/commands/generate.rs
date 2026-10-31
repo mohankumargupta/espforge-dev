@@ -1,29 +1,29 @@
-//! `espforge gen` (`gen` is a keyword, so the module is `generate`): ESPF source -> firmware project, and stop before cargo.
+//! `espforge gen` (`gen` is a keyword, so the module is `generate`): ESPF
+//! source -> firmware project, and stop before cargo.
 //!
 //! Source (FILE, `--example`, or the single `.espf` in the current directory)
-//! -> validate -> generate -> write. Everything is [`espforge_core`]'s; this
-//! command turns its typed failures into exit codes.
-//!
-//! Exit codes: 0 success, 1 user errors (diagnostics already printed),
-//! 2 internal / IO failure.
+//! -> validate -> generate -> write. Everything here is [`espforge_core`]'s;
+//! [`execute`] returns what was written and prints nothing, so `build` can run
+//! the same step without its output.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
-use espforge_core::project::{self, ProjectError};
-use espforge_core::source::{Source, resolve_source};
+use espforge_core::project::{self, Written};
+use espforge_core::source::resolve_source;
 
 use super::answers::AnswerArgs;
+use super::failure::{Failure, exit_code, failed, user};
 use super::report;
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct GenArgs {
-    /// Path to the ESPF project file (default: the single .espf in the current directory).
+    /// Path to the ESPF project file or its directory (default: the single .espf in the current directory).
     /// App logic: src/app.rs or app/rust/app.rs next to it
     pub file: Option<PathBuf>,
-    /// Use an embedded example instead of a file, e.g. 01.Basics/helloworld
-    #[arg(long, value_name = "CATEGORY/NAME", conflicts_with = "file")]
+    /// Use an embedded example instead of a file (category/name, or a short name like blink)
+    #[arg(long, value_name = "EXAMPLE", conflicts_with = "file")]
     pub example: Option<String>,
     /// Output directory for the generated project
     #[arg(short, long, default_value = "build")]
@@ -36,65 +36,33 @@ pub struct GenArgs {
     pub answers: AnswerArgs,
 }
 
-/// Why a generation stopped.
-#[derive(Debug)]
-pub enum Failure {
-    /// The user's input is at fault; the report is already printed.
-    User,
-    /// Something broke inside espforge or the OS, with its full chain.
-    Internal(String),
-}
-
-/// Print `❌ msg` and return the user-error marker.
-fn user(msg: impl std::fmt::Display) -> Failure {
-    eprintln!("❌ {msg}");
-    Failure::User
-}
-
-/// A core failure with an exit code: located spec problems render as
-/// snippets, user problems as the one-line `❌`, ours as exit 2.
-fn failed(error: ProjectError, source: &Source) -> Failure {
-    match error {
-        ProjectError::Spec(diagnostics) => {
-            report::diagnostics(&source.name, &source.text, &diagnostics);
-            Failure::User
-        }
-        ProjectError::User(message) => user(message),
-        ProjectError::Internal(e) => Failure::Internal(format!("{e:#}")),
-    }
-}
-
 pub fn run(args: GenArgs) -> ExitCode {
-    match execute(&args) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(Failure::User) => ExitCode::from(1),
-        Err(Failure::Internal(message)) => {
-            eprintln!("❌ {message}");
-            ExitCode::from(2)
-        }
-    }
+    exit_code(execute(&args).map(|written| {
+        report::notes(&written.notes);
+        println!(
+            "gen: wrote '{}' to {}",
+            written.crate_name,
+            args.out.display()
+        );
+        println!("  next: espforge build");
+    }))
 }
 
-pub fn execute(args: &GenArgs) -> Result<(), Failure> {
-    let source = resolve_source(args.file.as_deref(), args.example.as_deref()).map_err(user)?;
-    let written = project::generate_with(
+/// Generate the project and say nothing: the caller owns the terminal.
+pub fn execute(args: &GenArgs) -> Result<Written, Failure> {
+    let source = resolve_source(
+        args.file.as_deref(),
+        args.example.as_deref(),
+        Path::new("."),
+    )
+    .map_err(user)?;
+    project::generate_with(
         &source,
         &args.out,
         &args.answers.overrides(),
         args.runtime_path.clone(),
     )
-    .map_err(|e| failed(e, &source))?;
-
-    for note in &written.notes {
-        eprintln!("{note}");
-    }
-    println!(
-        "build: wrote '{}' to {}",
-        written.crate_name,
-        args.out.display()
-    );
-    println!("  next: cd {} && cargo build", args.out.display());
-    Ok(())
+    .map_err(|e| failed(e, &source))
 }
 
 #[cfg(test)]
@@ -119,7 +87,8 @@ mod tests {
     fn generates_the_helloworld_example() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out");
-        execute(&example_args("01.Basics/helloworld", &out)).unwrap();
+        let written = execute(&example_args("01.Basics/helloworld", &out)).unwrap();
+        assert_eq!(written.crate_name, "hello_world");
         for f in [
             "Cargo.toml",
             "build.rs",
@@ -140,6 +109,15 @@ mod tests {
     }
 
     #[test]
+    fn a_short_example_name_generates_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let written = execute(&example_args("blink", &out)).unwrap();
+        assert!(!written.crate_name.is_empty());
+        assert!(out.join("Cargo.toml").is_file());
+    }
+
+    #[test]
     fn rebuilding_is_fine_but_edited_owned_files_are_refused() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out");
@@ -156,7 +134,8 @@ mod tests {
         let out = dir.path().join("out");
         let mut args = example_args("01.Basics/helloworld", &out);
         args.answers.chip = Some("esp32s3".into());
-        execute(&args).unwrap();
+        let written = execute(&args).unwrap();
+        assert_eq!(written.notes.len(), 1);
         let cargo = std::fs::read_to_string(out.join("Cargo.toml")).unwrap();
         assert!(cargo.contains("\"esp32s3\""), "{cargo}");
     }
@@ -184,12 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn source_must_be_exactly_one_of_file_or_example() {
-        let none = GenArgs {
-            out: std::env::temp_dir().join("espforge-gen-none"),
-            ..Default::default()
-        };
-        assert!(is_user(execute(&none)));
+    fn file_and_example_together_or_a_missing_example_are_user_errors() {
         let both = GenArgs {
             file: Some("x.espf".into()),
             example: Some("01.Basics/helloworld".into()),
