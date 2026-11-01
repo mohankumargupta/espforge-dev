@@ -17,36 +17,25 @@ use crate::runtime_source::{RUNTIME_VERSION, RuntimeSource};
 
 /// The emitted `Cargo.toml`.
 ///
-/// `clients` is what the board's `# services` declared: the HTTP, HTTPS,
-/// WebSocket, secure-WebSocket and NTP clients are runtime features, so a
-/// project only names them when it has them. The dependency crates themselves
-/// (`edge-http`, `edge-ws`, `edge-nal-embassy`, `embedded-tls`, `sntpc`) stay
-/// in the runtime's own manifest, as the radio stack already does.
+/// The board's `# services` name runtime features, not dependencies: a service
+/// recipe owns its feature, so a project only names the ones it declares. The
+/// dependency crates themselves (`edge-http`, `edge-ws`, `edge-nal-embassy`,
+/// `embedded-tls`, `sntpc`) stay in the runtime's own manifest, as the radio
+/// stack already does.
 pub fn manifest(
     meta: &Meta,
     opts: &ResolvedOptions,
     runtime: &RuntimeSource,
     chip: &Chip,
-    clients: Clients,
     board: &Board,
 ) -> Result<String> {
     let name = meta.crate_name();
     let mut doc = DocumentMut::new();
     doc["package"] = package(meta, &name);
     doc["bin"] = Item::ArrayOfTables(bin(&name));
-    doc["dependencies"] = dependencies(meta, opts, runtime, chip, clients, board);
+    doc["dependencies"] = dependencies(meta, opts, runtime, chip, board);
     doc["profile"] = profiles();
     Ok(doc.to_string())
-}
-
-/// The client services the board declares.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Clients {
-    pub http: bool,
-    pub https: bool,
-    pub ws: bool,
-    pub wss: bool,
-    pub ntp: bool,
 }
 
 fn package(meta: &Meta, name: &str) -> Item {
@@ -75,7 +64,6 @@ fn dependencies(
     opts: &ResolvedOptions,
     runtime: &RuntimeSource,
     chip: &Chip,
-    clients: Clients,
     board: &Board,
 ) -> Item {
     let embassy = meta.runtime == Runtime::Embassy;
@@ -87,7 +75,7 @@ fn dependencies(
     let chip_name = chip.name.as_str();
 
     let mut deps = Table::new();
-    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy, wifi, clients));
+    deps["espforge-runtime"] = Item::Value(runtime_dependency(runtime, embassy, wifi, board));
     if let Some(drivers) = drivers_dependency(runtime, board) {
         deps["espforge-drivers"] = Item::Value(drivers);
     }
@@ -228,41 +216,34 @@ fn profiles() -> Item {
 /// `espforge-runtime = { path?, version, features? }`.
 ///
 /// `wifi` implies `embassy` (the schema's `requires`), so the Wi-Fi feature
-/// list carries both, in that order. `https-client` implies `http-client` and
-/// `wss-client` implies `ws-client` (the runtime's own features), so listing
-/// just the stronger of each pair is enough.
+/// list carries both, in that order. Each service names its own feature, in
+/// declaration order: adding a service never edits this function.
 fn runtime_dependency(
     source: &RuntimeSource,
     embassy: bool,
     wifi: bool,
-    clients: Clients,
+    board: &Board,
 ) -> Value {
     let mut table = InlineTable::new();
     if let RuntimeSource::Path(path) = source {
         table.insert("path", Value::from(path.replace('\\', "/")));
     }
     table.insert("version", Value::from(RUNTIME_VERSION));
+
+    let service_features = board.service_features();
     let mut features: Vec<&str> = Vec::new();
-    if embassy || wifi || clients.http || clients.https || clients.ws || clients.wss || clients.ntp
-    {
+    if embassy || wifi || !service_features.is_empty() {
         features.push("embassy");
     }
     if wifi {
         features.push("wifi");
     }
-    if clients.ntp {
-        features.push("ntp");
+    for feature in service_features {
+        if !features.contains(&feature) {
+            features.push(feature);
+        }
     }
-    if clients.wss {
-        features.push("wss-client");
-    } else if clients.ws {
-        features.push("ws-client");
-    }
-    if clients.https {
-        features.push("https-client");
-    } else if clients.http {
-        features.push("http-client");
-    }
+
     if !features.is_empty() {
         table.insert("features", Value::Array(array(&features)));
     }
@@ -331,17 +312,17 @@ fn console(meta: &Meta) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codegen::test_support::{board, case, chip, device};
+    use crate::codegen::test_support::{board, case, chip, device, service};
 
     fn cargo(defaults: bool, flags: &[(&str, &str)], runtime: Runtime) -> String {
-        cargo_with(defaults, flags, runtime, Clients::default())
+        cargo_with(defaults, flags, runtime, &board())
     }
 
     fn cargo_with(
         defaults: bool,
         flags: &[(&str, &str)],
         runtime: Runtime,
-        clients: Clients,
+        board: &Board,
     ) -> String {
         let case = case("esp32c3", runtime, defaults, flags, &[]);
         manifest(
@@ -349,10 +330,17 @@ mod tests {
             &case.opts,
             &RuntimeSource::Published,
             &chip("esp32c3"),
-            clients,
-            &board(),
+            board,
         )
         .unwrap()
+    }
+
+    /// A board with one service, as its recipe would lower it: the manifest
+    /// only reads the runtime feature.
+    fn with_service(feature: &'static str) -> Board {
+        let mut board = board();
+        board.services = vec![service(feature, feature, None)];
+        board
     }
 
     fn parse(text: &str) -> toml_edit::DocumentMut {
@@ -436,7 +424,6 @@ mod tests {
                 &radio.opts,
                 &RuntimeSource::Published,
                 &chip("esp32c3"),
-                Clients::default(),
                 &board(),
             )
             .unwrap(),
@@ -456,7 +443,6 @@ mod tests {
                 &case.opts,
                 &RuntimeSource::Path("..\\rt".into()),
                 &chip("esp32s3"),
-                Clients::default(),
                 &board(),
             )
             .unwrap(),
@@ -494,10 +480,7 @@ mod tests {
             true,
             &[],
             Runtime::Embassy,
-            Clients {
-                http: true,
-                ..Default::default()
-            },
+            &with_service("http-client"),
         ));
         assert_eq!(
             dependency(&doc, "espforge-runtime"),
@@ -515,10 +498,7 @@ mod tests {
             true,
             &[],
             Runtime::Embassy,
-            Clients {
-                https: true,
-                ..Default::default()
-            },
+            &with_service("https-client"),
         ));
         assert_eq!(
             dependency(&doc, "espforge-runtime"),
@@ -534,10 +514,7 @@ mod tests {
             true,
             &[],
             Runtime::Embassy,
-            Clients {
-                ws: true,
-                ..Default::default()
-            },
+            &with_service("ws-client"),
         ));
         assert_eq!(
             dependency(&doc, "espforge-runtime"),
@@ -554,10 +531,7 @@ mod tests {
             true,
             &[],
             Runtime::Embassy,
-            Clients {
-                wss: true,
-                ..Default::default()
-            },
+            &with_service("wss-client"),
         ));
         assert_eq!(
             dependency(&doc, "espforge-runtime"),
@@ -573,10 +547,7 @@ mod tests {
             true,
             &[],
             Runtime::Embassy,
-            Clients {
-                ntp: true,
-                ..Default::default()
-            },
+            &with_service("ntp"),
         ));
         assert_eq!(
             dependency(&doc, "espforge-runtime"),
@@ -608,7 +579,6 @@ mod tests {
                     &case.opts,
                     &RuntimeSource::Published,
                     &chip("esp32c3"),
-                    Clients::default(),
                     &board,
                 )
                 .unwrap(),
@@ -659,7 +629,6 @@ mod tests {
                 &case.opts,
                 &RuntimeSource::Published,
                 &chip("esp32c3"),
-                Clients::default(),
                 &board,
             )
             .unwrap(),
@@ -684,7 +653,6 @@ mod tests {
                 &case.opts,
                 &RuntimeSource::Path("/work/espforge-runtime".into()),
                 &chip("esp32c3"),
-                Clients::default(),
                 &board,
             )
             .unwrap(),

@@ -4,16 +4,14 @@
 //! provides the interface it rides on — today a `<wifi_station>` and its
 //! embassy-net stack.
 //!
-//! The service elements share the wording of their diagnostics here, so the
-//! four files differ only in what makes them different (TLS buffers, the
-//! `insecure` flag, the WebSocket handshake) rather than in how they say
-//! "unknown network".
+//! A service is data as much as a component or a device is: its type, its
+//! constructor, its config fields and its feature all come from a
+//! `service_recipe` in `espf.schema.kdl`, so adding one edits the runtime and
+//! the schema, never this crate. [`recipe`] is the interpreter; the wording of
+//! the diagnostics it can report lives here, so every service says "unknown
+//! network" the same way.
 
-pub mod http_client;
-pub mod https_client;
-pub mod ntp;
-pub mod ws_client;
-pub mod wss_client;
+pub mod recipe;
 
 use espf::context::ParsedNode;
 use espf::diag::node_span;

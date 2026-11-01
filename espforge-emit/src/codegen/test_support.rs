@@ -5,8 +5,8 @@
 //! the runtime and the peripheral list, not an option flag for them.
 
 use espforge_elements::{
-    Answers, Console, DerivedInputs, Device, Ident, Meta, ResolvedOptions, ResourceGraph, Runtime,
-    Board, resolve,
+    Answers, Board, Console, DerivedInputs, Device, Ident, Meta, ResolvedOptions, ResourceGraph,
+    Runtime, Service, resolve,
 };
 use espforge_schema::schema;
 
@@ -85,6 +85,25 @@ pub fn device(feature: &'static str, deps: &[&str]) -> Device {
         taken: None,
         pins: Vec::new(),
         args: Vec::new(),
+    }
+}
+
+/// One lowered service, as a `service_recipe` builds it.
+///
+/// Only the fields a backend reads are interesting here: the runtime feature
+/// the manifest asks for, and the heap the service needs.
+pub fn service(tag: &'static str, feature: &str, heap_bytes: Option<u32>) -> Service {
+    Service {
+        id: Ident::new(tag, 0..0),
+        tag,
+        network: Ident::new("home", 0..0),
+        feature: feature.to_string(),
+        ty: format!("espforge_runtime::{tag}"),
+        new: format!("espforge_runtime::{tag}::new"),
+        config: None,
+        heap_bytes,
+        config_fields: Vec::new(),
+        extra_args: Vec::new(),
     }
 }
 

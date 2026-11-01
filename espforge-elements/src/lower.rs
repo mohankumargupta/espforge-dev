@@ -1143,17 +1143,35 @@ mod tests {
         );
     }
 
+    /// The config expression one field of `service` holds.
+    fn field_of<'a>(service: &'a Service, name: &str) -> &'a str {
+        service
+            .config_fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, expr)| expr.as_str())
+            .unwrap_or_else(|| panic!("`{name}` is not a config field of <{}>", service.tag))
+    }
+
     #[test]
     fn an_http_client_lowers_over_the_stations_stack() {
         let src = with_service("<http_client id=\"client\" network=\"$home\" />");
         let board = lower_src_with(&src, embassy_meta()).expect("the client lowers");
-        let Service::HttpClient(client) = &board.services[0] else {
-            panic!("the service is an http client");
-        };
+        let client = &board.services[0];
         assert_eq!(client.id.raw, "client");
         assert_eq!(client.network.raw, "home");
-        assert_eq!((client.rx_buffer_size, client.tx_buffer_size), (2048, 1024));
-        assert_eq!(client.timeout_ms, 10000);
+        assert_eq!(client.tag, "http_client");
+        assert_eq!(client.feature, "http-client");
+        assert_eq!(client.ty, "espforge_runtime::HttpClient");
+        assert_eq!(client.new, "espforge_runtime::HttpClient::new");
+        assert_eq!(
+            client.config.as_deref(),
+            Some("espforge_runtime::HttpClientConfig")
+        );
+        assert_eq!(field_of(client, "rx_buffer_size"), "2048u32 as usize");
+        assert_eq!(field_of(client, "tx_buffer_size"), "1024u32 as usize");
+        assert_eq!(field_of(client, "timeout_ms"), "10000u32 as u64");
+        assert!(client.extra_args.is_empty());
         assert!(board.warnings.is_empty(), "no warning without insecure");
     }
 
@@ -1174,7 +1192,7 @@ mod tests {
         let src = with_service("<http_client id=\"client\" network=\"$home\" />");
         let errors = lower_src(&src).unwrap_err();
         assert_eq!(errors[0].code, codes::SERVICE_REQUIRES_EMBASSY);
-        assert_eq!(errors[0].message, "HTTP client requires embassy");
+        assert_eq!(errors[0].message, "http_client requires embassy");
         assert_eq!(
             errors[0].labels[0].text,
             "<http_client id=\"client\"> needs the embassy runtime; change <runtime type=\"..\" /> to embassy"
@@ -1221,12 +1239,11 @@ mod tests {
             board.warnings[0].labels[0].text,
             "server certificates will not be validated"
         );
-        let Service::HttpsClient(client) = &board.services[0] else {
-            panic!("the service is an https client");
-        };
-        assert!(client.insecure);
-        assert_eq!(client.rx_buffer_size, 4096);
-        assert_eq!(client.timeout_ms, 15000);
+        let client = &board.services[0];
+        assert_eq!(client.extra_args, ["true"]);
+        assert_eq!(client.heap_bytes, Some(98304));
+        assert_eq!(field_of(client, "rx_buffer_size"), "4096u32 as usize");
+        assert_eq!(field_of(client, "timeout_ms"), "15000u32 as u64");
     }
 
     #[test]
@@ -1252,15 +1269,15 @@ mod tests {
     fn a_ws_client_lowers_over_the_stations_stack() {
         let src = with_service("<ws_client id=\"ws\" network=\"$home\" />");
         let board = lower_src_with(&src, embassy_meta()).expect("the ws client lowers");
-        let Service::WsClient(client) = &board.services[0] else {
-            panic!("the service is a ws client");
-        };
+        let client = &board.services[0];
         assert_eq!(client.id.raw, "ws");
         assert_eq!(client.network.raw, "home");
-        assert_eq!((client.rx_buffer_size, client.tx_buffer_size), (2048, 1024));
-        assert_eq!(client.timeout_ms, 10000);
-        assert!(board.uses_ws());
-        assert!(!board.uses_wss());
+        assert_eq!(client.feature, "ws-client");
+        assert_eq!(field_of(client, "rx_buffer_size"), "2048u32 as usize");
+        assert_eq!(field_of(client, "tx_buffer_size"), "1024u32 as usize");
+        assert_eq!(field_of(client, "timeout_ms"), "10000u32 as u64");
+        assert_eq!(board.service_features(), ["ws-client"]);
+        assert_eq!(board.max_service_heap(), None);
     }
 
     #[test]
@@ -1268,7 +1285,7 @@ mod tests {
         let src = with_service("<ws_client id=\"ws\" network=\"$home\" />");
         let errors = lower_src(&src).unwrap_err();
         assert_eq!(errors[0].code, codes::SERVICE_REQUIRES_EMBASSY);
-        assert_eq!(errors[0].message, "WebSocket client requires embassy");
+        assert_eq!(errors[0].message, "ws_client requires embassy");
         assert_eq!(
             errors[0].labels[0].text,
             "<ws_client id=\"ws\"> needs the embassy runtime; change <runtime type=\"..\" /> to embassy"
@@ -1294,29 +1311,27 @@ mod tests {
         assert_eq!(board.warnings.len(), 1);
         assert_eq!(board.warnings[0].severity, Severity::Warning);
         assert_eq!(board.warnings[0].code, codes::SERVICE_INSECURE_WARNING);
-        let Service::WssClient(client) = &board.services[0] else {
-            panic!("the service is a wss client");
-        };
-        assert!(client.insecure);
-        assert_eq!(client.rx_buffer_size, 4096);
-        assert_eq!(client.timeout_ms, 15000);
-        assert!(board.uses_wss());
+        let client = &board.services[0];
+        assert_eq!(client.extra_args, ["true"]);
+        assert_eq!(client.heap_bytes, Some(98304));
+        assert_eq!(field_of(client, "rx_buffer_size"), "4096u32 as usize");
+        assert_eq!(board.max_service_heap(), Some(98304));
     }
 
     #[test]
     fn an_ntp_client_lowers_over_the_stations_stack() {
         let src = with_service("<ntp id=\"clock\" network=\"$home\" />");
         let board = lower_src_with(&src, embassy_meta()).expect("the ntp client lowers");
-        let Service::Ntp(client) = &board.services[0] else {
-            panic!("the service is an ntp client");
-        };
+        let client = &board.services[0];
         assert_eq!(client.id.raw, "clock");
         assert_eq!(client.network.raw, "home");
-        assert_eq!(client.server, "pool.ntp.org");
-        assert_eq!(client.port, 123);
-        assert_eq!(client.timeout_ms, 5000);
-        assert!(board.uses_ntp());
-        assert!(!board.uses_http());
+        assert_eq!(client.tag, "ntp");
+        assert_eq!(client.feature, "ntp");
+        assert_eq!(client.ty, "espforge_runtime::NtpClient");
+        assert_eq!(field_of(client, "server"), "\"pool.ntp.org\"");
+        assert_eq!(field_of(client, "port"), "123u32 as u16");
+        assert_eq!(field_of(client, "timeout_ms"), "5000u32 as u64");
+        assert_eq!(board.service_features(), ["ntp"]);
     }
 
     #[test]
@@ -1325,12 +1340,10 @@ mod tests {
             "<ntp id=\"clock\" network=\"$home\" server=\"time.google.com\" port=\"1123\" timeout_ms=\"3000\" />",
         );
         let board = lower_src_with(&src, embassy_meta()).expect("the ntp client lowers");
-        let Service::Ntp(client) = &board.services[0] else {
-            panic!("the service is an ntp client");
-        };
-        assert_eq!(client.server, "time.google.com");
-        assert_eq!(client.port, 1123);
-        assert_eq!(client.timeout_ms, 3000);
+        let client = &board.services[0];
+        assert_eq!(field_of(client, "server"), "\"time.google.com\"");
+        assert_eq!(field_of(client, "port"), "1123u32 as u16");
+        assert_eq!(field_of(client, "timeout_ms"), "3000u32 as u64");
     }
 
     #[test]
@@ -1338,7 +1351,7 @@ mod tests {
         let src = with_service("<ntp id=\"clock\" network=\"$home\" />");
         let errors = lower_src(&src).unwrap_err();
         assert_eq!(errors[0].code, codes::SERVICE_REQUIRES_EMBASSY);
-        assert_eq!(errors[0].message, "NTP client requires embassy");
+        assert_eq!(errors[0].message, "ntp requires embassy");
         assert_eq!(
             errors[0].labels[0].text,
             "<ntp id=\"clock\"> needs the embassy runtime; change <runtime type=\"..\" /> to embassy"
@@ -1381,7 +1394,7 @@ mod tests {
         assert_eq!(errors[0].message, "invalid ntp server");
         assert_eq!(
             errors[0].labels[0].text,
-            "<ntp id=\"clock\"> server=\"\" must name a host or an IP address"
+            "<ntp id=\"clock\"> server=\"\" must not be empty"
         );
     }
 

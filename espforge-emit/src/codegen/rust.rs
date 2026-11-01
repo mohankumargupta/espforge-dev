@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use espforge_elements::element::EmitParts;
 use espforge_elements::{Board, EmitCx, Lowered, MainCtx, Meta, ResolvedOptions, Runtime};
 use proc_macro2::TokenStream;
+use proc_macro2::Literal;
 use quote::format_ident;
 
 use super::comments::{self, Comment};
@@ -291,14 +292,21 @@ fn lib(meta: &Meta, has_devices: bool) -> Result<String> {
 /// The heap line `main()` must install, if any.
 ///
 /// The radio is the only thing that asks for one: `esp-radio` allocates, and
-/// without a heap the WiFi tasks fail to start. A TLS client (`<https_client>`
-/// or `<wss_client>`) adds `embedded-tls`'s crypto scratch, so it needs a
-/// larger one. The literal is written out so the number reaches the file
-/// unsuffixed, and the caller leaves it out entirely when there is no radio (a
-/// blocking project cannot have one: `wifi` requires `embassy`).
+/// without a heap the WiFi tasks fail to start. A service that states
+/// `heap_bytes` (TLS keeps `embedded-tls`'s crypto scratch and record buffers)
+/// asks for its own, and the largest one wins. The number is written
+/// unsuffixed, as whole KiB when it is one, because that is the form the
+/// goldens carry. The caller leaves the line out entirely when nothing wants a
+/// heap (a blocking project cannot have a radio: `wifi` requires `embassy`).
 fn heap_line(board: &Board, opts: &ResolvedOptions) -> TokenStream {
-    if board.uses_https() || board.uses_wss() {
-        quote::quote! { esp_alloc::heap_allocator!(size: 96 * 1024); }
+    if let Some(heap_size) = board.max_service_heap() {
+        if heap_size % 1024 == 0 {
+            let kib = Literal::u32_unsuffixed(heap_size / 1024);
+            quote::quote! { esp_alloc::heap_allocator!(size: #kib * 1024); }
+        } else {
+            let size = Literal::u32_unsuffixed(heap_size);
+            quote::quote! { esp_alloc::heap_allocator!(size: #size); }
+        }
     } else if opts.is_on("wifi") {
         quote::quote! { esp_alloc::heap_allocator!(size: 72 * 1024); }
     } else {
@@ -605,7 +613,7 @@ fn build_rs(meta: &Meta) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codegen::test_support::case;
+    use crate::codegen::test_support::{case, service};
     use espforge_elements::components::recipe::RecipeComponent;
     use espforge_elements::{Component, Ident, Owner, OwnerKind, Pin, PinUse, ResourceGraph};
 
@@ -769,16 +777,9 @@ mod tests {
     fn an_https_client_bumps_the_heap() {
         let case = case("esp32c3", Runtime::Embassy, true, &[], &["wifi"]);
         let mut board = empty_board(&case);
-        board.services.push(espforge_elements::Service::HttpsClient(
-            espforge_elements::services::https_client::HttpsClientService {
-                id: Ident::new("secure", 0..0),
-                network: Ident::new("home", 0..0),
-                rx_buffer_size: 4096,
-                tx_buffer_size: 2048,
-                timeout_ms: 15000,
-                insecure: false,
-            },
-        ));
+        board
+            .services
+            .push(service("https_client", "https-client", Some(98304)));
         let text = main(&board, &collect(&board), &case.meta, &case.opts).unwrap();
         assert!(
             text.contains("esp_alloc::heap_allocator!(size : 96 * 1024);"),
@@ -792,15 +793,9 @@ mod tests {
     fn a_wss_client_bumps_the_heap_but_a_ws_client_does_not() {
         let case = case("esp32c3", Runtime::Embassy, true, &[], &["wifi"]);
         let mut board = empty_board(&case);
-        board.services.push(espforge_elements::Service::WsClient(
-            espforge_elements::services::ws_client::WsClientService {
-                id: Ident::new("ws", 0..0),
-                network: Ident::new("home", 0..0),
-                rx_buffer_size: 2048,
-                tx_buffer_size: 1024,
-                timeout_ms: 10000,
-            },
-        ));
+        board
+            .services
+            .push(service("ws_client", "ws-client", None));
         let text = main(&board, &collect(&board), &case.meta, &case.opts).unwrap();
         assert!(
             text.contains("esp_alloc::heap_allocator!(size : 72 * 1024);"),
@@ -808,16 +803,9 @@ mod tests {
         );
 
         board.services.clear();
-        board.services.push(espforge_elements::Service::WssClient(
-            espforge_elements::services::wss_client::WssClientService {
-                id: Ident::new("secure_ws", 0..0),
-                network: Ident::new("home", 0..0),
-                rx_buffer_size: 4096,
-                tx_buffer_size: 2048,
-                timeout_ms: 15000,
-                insecure: false,
-            },
-        ));
+        board
+            .services
+            .push(service("wss_client", "wss-client", Some(98304)));
         let text = main(&board, &collect(&board), &case.meta, &case.opts).unwrap();
         assert!(
             text.contains("esp_alloc::heap_allocator!(size : 96 * 1024);"),

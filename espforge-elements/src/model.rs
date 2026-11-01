@@ -541,47 +541,105 @@ impl Component {
     }
 }
 
-/// One line per service variant generates [`Service::id`] and the
-/// [`Lowered`](crate::Lowered) forwarding, so a new service is its own file
-/// plus its own line here — the same shape as `component_enum!`.
-macro_rules! service_enum {
-    ($($variant:ident($ty:ty)),* $(,)?) => {
-        /// A service in the board: software that rides on an interface, not a
-        /// pin. Lowered after the components, so it can refer to one.
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub enum Service {
-            $($variant($ty)),*
-        }
-
-        impl Service {
-            /// The service's id.
-            pub fn id(&self) -> &Ident {
-                match self {
-                    $(Service::$variant(s) => crate::element::Lowered::id(s),)*
-                }
-            }
-        }
-
-        impl crate::element::Lowered for Service {
-            fn id(&self) -> &Ident {
-                self.id()
-            }
-
-            fn emit(&self, board: &Board, cx: &mut crate::element::EmitCx) {
-                match self {
-                    $(Service::$variant(s) => s.emit(board, cx),)*
-                }
-            }
-        }
-    };
+/// A service in the board: software that rides on a network component, not a
+/// pin. Lowered after the components, so its `network=` can refer to one.
+///
+/// Every `service_recipe` lowers to this shape. The type, the constructor, the
+/// config fields and the feature are strings the schema itself supplied, so
+/// adding a service edits the runtime and the schema, never this file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Service {
+    pub id: Ident,
+    /// The schema tag, which names the recipe that built this.
+    pub tag: &'static str,
+    /// The component whose network stack the service rides on.
+    pub network: Ident,
+    /// The `espforge-runtime` feature the generated project names.
+    pub feature: String,
+    /// The `Services` field type.
+    pub ty: String,
+    /// The Rust path of the constructor.
+    pub new: String,
+    /// The config struct passed to `new`, if the recipe declares one.
+    pub config: Option<String>,
+    /// The heap the service needs in `main.rs`, in bytes.
+    pub heap_bytes: Option<u32>,
+    /// `(field, expression)` pairs, in config-struct declaration order.
+    pub config_fields: Vec<(String, String)>,
+    /// The Rust expressions passed to `new` after the config.
+    pub extra_args: Vec<String>,
 }
 
-service_enum! {
-    HttpClient(crate::services::http_client::HttpClientService),
-    HttpsClient(crate::services::https_client::HttpsClientService),
-    WsClient(crate::services::ws_client::WsClientService),
-    WssClient(crate::services::wss_client::WssClientService),
-    Ntp(crate::services::ntp::NtpService),
+impl Service {
+    /// The service's id.
+    pub fn id(&self) -> &Ident {
+        &self.id
+    }
+}
+
+impl crate::element::Lowered for Service {
+    fn id(&self) -> &Ident {
+        &self.id
+    }
+
+    fn emit(&self, _board: &Board, cx: &mut crate::element::EmitCx) {
+        let name = format_ident!("{}", self.id.rust_name());
+        let ty: TokenStream = self
+            .ty
+            .parse()
+            .expect("a service field type is a Rust type expression");
+        let new: TokenStream = self
+            .new
+            .parse()
+            .expect("a service constructor is a Rust path");
+        let stack = crate::services::network_stack(&self.network);
+        let extra: Vec<TokenStream> = self
+            .extra_args
+            .iter()
+            .map(|arg| {
+                arg.parse()
+                    .expect("a service argument is a Rust expression")
+            })
+            .collect();
+
+        let init = match &self.config {
+            Some(config) => {
+                let config_ty: TokenStream = config
+                    .parse()
+                    .expect("a service config is a Rust path");
+                let fields: Vec<TokenStream> = self
+                    .config_fields
+                    .iter()
+                    .map(|(field, expr)| {
+                        let field = format_ident!("{field}");
+                        let value: TokenStream = expr
+                            .parse()
+                            .expect("a service config value is a Rust expression");
+                        quote! { #field: #value, }
+                    })
+                    .collect();
+                quote! {
+                    #new(
+                        #stack,
+                        #config_ty {
+                            #(#fields)*
+                        },
+                        #(#extra),*
+                    )
+                }
+            }
+            None => quote! {
+                #new(#stack, #(#extra),*)
+            },
+        };
+
+        cx.service_field(quote! {
+            pub #name: #ty,
+        });
+        cx.service_init(quote! {
+            #name: #init,
+        });
+    }
 }
 
 /// A device in the board: a driver for a specific part, bound to the component
@@ -701,39 +759,32 @@ pub struct Board {
 }
 
 impl Board {
-    /// Whether any plain-HTTP client service is declared.
-    pub fn uses_http(&self) -> bool {
+    /// Distinct service features requested by the board, in declaration order
+    /// and without duplicates: what the generated `Cargo.toml` asks
+    /// `espforge-runtime` for.
+    ///
+    /// Source order, not sorted: the emitted feature array keeps the order the
+    /// services were declared in, which is what makes a golden diff readable.
+    /// The feature is the recipe's own, so adding a service never edits the
+    /// manifest backend.
+    pub fn service_features(&self) -> Vec<&str> {
         self.services
             .iter()
-            .any(|service| matches!(service, Service::HttpClient(_)))
+            .map(|service| service.feature.as_str())
+            .fold(Vec::new(), |mut out, feature| {
+                if !out.contains(&feature) {
+                    out.push(feature);
+                }
+                out
+            })
     }
 
-    /// Whether any TLS (HTTPS) client service is declared.
-    pub fn uses_https(&self) -> bool {
+    /// The largest heap any service needs (`embedded-tls` scratch), in bytes.
+    pub fn max_service_heap(&self) -> Option<u32> {
         self.services
             .iter()
-            .any(|service| matches!(service, Service::HttpsClient(_)))
-    }
-
-    /// Whether any plain WebSocket client service is declared.
-    pub fn uses_ws(&self) -> bool {
-        self.services
-            .iter()
-            .any(|service| matches!(service, Service::WsClient(_)))
-    }
-
-    /// Whether any TLS (secure WebSocket) client service is declared.
-    pub fn uses_wss(&self) -> bool {
-        self.services
-            .iter()
-            .any(|service| matches!(service, Service::WssClient(_)))
-    }
-
-    /// Whether any NTP client service is declared.
-    pub fn uses_ntp(&self) -> bool {
-        self.services
-            .iter()
-            .any(|service| matches!(service, Service::Ntp(_)))
+            .filter_map(|service| service.heap_bytes)
+            .max()
     }
 
     /// The driver features the project needs, in declaration order and without

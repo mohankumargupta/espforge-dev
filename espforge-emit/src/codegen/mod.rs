@@ -51,20 +51,7 @@ pub fn generate(
                 .get(file.out_path)
                 .with_context(|| format!("the Rust backend has no `{}`", file.out_path))?
                 .clone(),
-            Source::Cargo => cargo::manifest(
-                meta,
-                opts,
-                runtime,
-                &chip,
-                cargo::Clients {
-                    http: board.uses_http(),
-                    https: board.uses_https(),
-                    ws: board.uses_ws(),
-                    wss: board.uses_wss(),
-                    ntp: board.uses_ntp(),
-                },
-                board,
-            )?,
+            Source::Cargo => cargo::manifest(meta, opts, runtime, &chip, board)?,
             Source::CargoConfig => config::cargo_config(opts, &chip)?,
             Source::EspConfig => config::esp_config().to_string(),
             Source::Toolchain => config::toolchain(&chip)?,

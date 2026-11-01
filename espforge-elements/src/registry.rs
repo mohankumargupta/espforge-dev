@@ -5,11 +5,12 @@
 //! this crate explicitly, and the "registry is non-empty" test guards the
 //! other failure mode: a slice the linker drops.
 //!
-//! There are two more doors, both keyed on data the schema owns: a component
-//! with a `recipe` needs no Rust file, and a device with a `device_recipe`
-//! needs none either, so [`element`] falls back to [`recipes`] and
-//! [`device_recipes`] in schema order. The coherence tests keep the three
-//! doors from disagreeing: every element has exactly one implementation.
+//! There are three more doors, all keyed on data the schema owns: a component
+//! with a `recipe` needs no Rust file, a device with a `device_recipe` needs
+//! none either, and neither does a service with a `service_recipe`, so
+//! [`element`] falls back to [`recipes`], [`device_recipes`] and
+//! [`service_recipes`] in schema order. The coherence tests keep the four doors
+//! from disagreeing: every element has exactly one implementation.
 
 use std::sync::OnceLock;
 
@@ -19,6 +20,7 @@ use crate::components::recipe::RecipeElement;
 use crate::devices::recipe::DeviceRecipeElement;
 use crate::element::Element;
 use crate::schema::schema;
+use crate::services::recipe::ServiceRecipeElement;
 
 /// Every registered element.
 ///
@@ -67,8 +69,25 @@ pub fn device_recipes() -> &'static [DeviceRecipeElement] {
     })
 }
 
+/// One [`ServiceRecipeElement`] per schema element that declares a
+/// `service_recipe`, in schema order.
+///
+/// The service tier: a service whose wiring is data needs no Rust element, so
+/// adding one edits the runtime and the schema and nothing here.
+pub fn service_recipes() -> &'static [ServiceRecipeElement] {
+    static RECIPES: OnceLock<Vec<ServiceRecipeElement>> = OnceLock::new();
+    RECIPES.get_or_init(|| {
+        schema()
+            .elements
+            .iter()
+            .filter(|element| element.service_recipe.is_some())
+            .map(ServiceRecipeElement::new)
+            .collect()
+    })
+}
+
 /// The registered element for `tag`, if any: a hand-written element first,
-/// then a component recipe, then a device recipe.
+/// then a component recipe, then a device recipe, then a service recipe.
 pub fn element(tag: &str) -> Option<&'static dyn Element> {
     ELEMENTS
         .iter()
@@ -82,6 +101,12 @@ pub fn element(tag: &str) -> Option<&'static dyn Element> {
         })
         .or_else(|| {
             device_recipes()
+                .iter()
+                .find(|element| element.tag() == tag)
+                .map(|element| element as &'static dyn Element)
+        })
+        .or_else(|| {
+            service_recipes()
                 .iter()
                 .find(|element| element.tag() == tag)
                 .map(|element| element as &'static dyn Element)
@@ -124,12 +149,15 @@ mod tests {
             .iter()
             .filter(|tag| **tag == element.tag.as_str())
             .count();
-        let recipe = element.recipe.is_some() || element.device_recipe.is_some();
+        let recipe = element.recipe.is_some()
+            || element.device_recipe.is_some()
+            || element.service_recipe.is_some();
         match (registered, recipe) {
             (1, false) | (0, true) => None,
             (0, false) => Some(format!(
-                "`<{}>` has no implementation: add a `recipe` (or a `device_recipe` for a \
-                 device) to its schema block, or `espforge-elements/src/{}/{}.rs`",
+                "`<{}>` has no implementation: add a `recipe` (a `device_recipe` for a \
+                 device, a `service_recipe` for a service) to its schema block, or \
+                 `espforge-elements/src/{}/{}.rs`",
                 element.tag,
                 element.section,
                 element.tag.replace('-', "_"),
@@ -321,6 +349,40 @@ mod tests {
         );
         assert!(problem.contains("already has a `recipe`"), "{problem}");
         assert!(implementation_problem(ili, &[]).is_none());
+    }
+
+    /// The service door is open: a `service_recipe` element is found without a
+    /// Rust file, in schema order after the device recipes.
+    #[test]
+    fn the_service_door_reaches_every_recipe_service() {
+        for tag in ["http_client", "https_client", "ws_client", "wss_client", "ntp"] {
+            let registered =
+                element(tag).unwrap_or_else(|| panic!("`<{tag}>` has an implementation"));
+            assert_eq!(registered.tag(), tag);
+            assert!(
+                service_recipes().iter().any(|recipe| recipe.tag() == tag),
+                "`<{tag}>` comes from its service recipe"
+            );
+            let schema_element = schema().element(tag).unwrap();
+            assert!(
+                implementation_problem(schema_element, &[]).is_none(),
+                "`<{tag}>` has exactly one implementation"
+            );
+        }
+    }
+
+    /// A service with a `service_recipe` *and* a registered implementation has
+    /// two doors, and the coherence test names the file to delete.
+    #[test]
+    fn a_service_recipe_beside_a_rust_file_is_refused() {
+        let schema = schema();
+        let ntp = schema.element("ntp").expect("`<ntp>` is a schema element");
+        let problem = implementation_problem(ntp, &["ntp"]).expect("two doors is a problem");
+        assert!(
+            problem.contains("delete `espforge-elements/src/services/ntp.rs`"),
+            "{problem}"
+        );
+        assert!(implementation_problem(ntp, &[]).is_none());
     }
 
     #[test]

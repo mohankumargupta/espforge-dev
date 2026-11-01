@@ -306,6 +306,16 @@ element "http_client" section="services" {
     attr "timeout_ms" kind="u32" default="10000" {
         help "Socket connection and read/write timeout in milliseconds."
     }
+    service_recipe {
+        network "network"
+        feature "http-client"
+        type "espforge_runtime::HttpClient"
+        new "espforge_runtime::HttpClient::new"
+        config "espforge_runtime::HttpClientConfig"
+        field "rx_buffer_size" as="rx_buffer_size as usize" min=512
+        field "tx_buffer_size" as="tx_buffer_size as usize"
+        field "timeout_ms" as="timeout_ms as u64"
+    }
     example "minimal" #"<http_client id="client" network="$home" />"#
     example "custom buffers" #"<http_client id="client" network="$home" rx_buffer_size="4096" timeout_ms="5000" />"#
     see_also "components/wifi_station"
@@ -331,6 +341,19 @@ element "https_client" section="services" {
     attr "insecure" kind="bool" default="false" {
         help "When true, skips server X.509 certificate verification. Emits a build warning."
     }
+    service_recipe {
+        network "network"
+        feature "https-client"
+        type "espforge_runtime::HttpsClient"
+        new "espforge_runtime::HttpsClient::new"
+        config "espforge_runtime::HttpsClientConfig"
+        // embedded-tls keeps crypto scratch and record buffers on the heap.
+        heap_bytes 98304
+        field "rx_buffer_size" as="rx_buffer_size as usize" min=4096
+        field "tx_buffer_size" as="tx_buffer_size as usize"
+        field "timeout_ms" as="timeout_ms as u64"
+        arg "insecure"
+    }
     example "secure client" #"<https_client id="secure_client" network="$home" />"#
     example "insecure for development" #"<https_client id="dev_client" network="$home" insecure="true" />"#
     see_also "components/wifi_station"
@@ -352,6 +375,16 @@ element "ws_client" section="services" {
     }
     attr "timeout_ms" kind="u32" default="10000" {
         help "Handshake connection and message timeout in milliseconds."
+    }
+    service_recipe {
+        network "network"
+        feature "ws-client"
+        type "espforge_runtime::WsClient"
+        new "espforge_runtime::WsClient::new"
+        config "espforge_runtime::WsClientConfig"
+        field "rx_buffer_size" as="rx_buffer_size as usize" min=512
+        field "tx_buffer_size" as="tx_buffer_size as usize"
+        field "timeout_ms" as="timeout_ms as u64"
     }
     example "minimal" #"<ws_client id="ws" network="$home" />"#
     example "custom buffers" #"<ws_client id="ws" network="$home" rx_buffer_size="4096" tx_buffer_size="2048" timeout_ms="15000" />"#
@@ -379,6 +412,19 @@ element "wss_client" section="services" {
     attr "insecure" kind="bool" default="false" {
         help "When true, skips server X.509 certificate verification. Emits a build warning."
     }
+    service_recipe {
+        network "network"
+        feature "wss-client"
+        type "espforge_runtime::WssClient"
+        new "espforge_runtime::WssClient::new"
+        config "espforge_runtime::WssClientConfig"
+        // embedded-tls keeps crypto scratch and record buffers on the heap.
+        heap_bytes 98304
+        field "rx_buffer_size" as="rx_buffer_size as usize" min=4096
+        field "tx_buffer_size" as="tx_buffer_size as usize"
+        field "timeout_ms" as="timeout_ms as u64"
+        arg "insecure"
+    }
     example "secure client" #"<wss_client id="secure_ws" network="$home" />"#
     example "insecure for development" #"<wss_client id="dev_ws" network="$home" insecure="true" />"#
     see_also "components/wifi_station"
@@ -401,6 +447,16 @@ element "ntp" section="services" {
     }
     attr "timeout_ms" kind="u32" default="5000" {
         help "Timeout in milliseconds for DNS resolution and UDP packet exchange."
+    }
+    service_recipe {
+        network "network"
+        feature "ntp"
+        type "espforge_runtime::NtpClient"
+        new "espforge_runtime::NtpClient::new"
+        config "espforge_runtime::NtpConfig"
+        field "server" non_empty=#true
+        field "port" as="port as u16" range="1..=65535"
+        field "timeout_ms" as="timeout_ms as u64"
     }
     example "minimal" #"<ntp id="clock" network="$home" />"#
     example "custom server and timeout" #"<ntp id="clock" network="$home" server="time.google.com" timeout_ms="3000" />"#

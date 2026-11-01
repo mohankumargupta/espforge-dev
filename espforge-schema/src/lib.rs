@@ -125,6 +125,10 @@ pub struct Element {
     /// bus component, auxiliary pins and value slots rather than its own Rust
     /// file.
     pub device_recipe: Option<DeviceRecipe>,
+    /// The `service_recipe` child, when this element is a service built from
+    /// its network component, config fields and arguments rather than its own
+    /// Rust file.
+    pub service_recipe: Option<ServiceRecipe>,
     /// Span of the `element` node in `espf.schema.kdl`.
     pub span: Range<usize>,
 }
@@ -204,6 +208,66 @@ pub struct DeviceArg {
     /// The direction the referenced `<gpio>` must declare (pin slots).
     pub direction: Direction,
     /// Span of the `arg` node in the schema text.
+    pub span: Range<usize>,
+}
+
+/// The `service_recipe` child of a `# services` element: how to build a
+/// service from one network component, a config struct and positional
+/// arguments, with no Rust file of its own.
+///
+/// A service is software over an interface, so it owns no pin. The recipe names
+/// the attribute holding the network reference, the runtime feature to switch
+/// on, the field type and its constructor, and one [`ServiceField`] or `arg`
+/// per remaining attribute. Filling those slots is `espforge-elements`'s job,
+/// and every rule that could make a slot unfillable is a load error here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRecipe {
+    /// The element's `attr` of `kind="ref"` that names the network component
+    /// the service rides on (`network`).
+    pub network: String,
+    /// The `espforge-runtime` feature the generated project names.
+    pub feature: String,
+    /// The `Services` field's Rust type.
+    pub ty: String,
+    /// The Rust path of the constructor, called with the stack, the config and
+    /// every `arg` in declared order.
+    pub new: String,
+    /// The config struct passed to `new`, built from the recipe's `field`s.
+    /// `None` passes the `arg`s directly.
+    pub config: Option<String>,
+    /// Heap the service needs in `main.rs`, in bytes (`embedded-tls` scratch,
+    /// record buffers).
+    pub heap_bytes: Option<u32>,
+    /// Whether the service needs the embassy runtime (the default).
+    pub requires_embassy: bool,
+    /// The config fields, in the order the config struct declares them.
+    pub fields: Vec<ServiceField>,
+    /// The attribute names passed to `new` after the config, in order.
+    pub args: Vec<String>,
+    /// Span of the `service_recipe` node in the schema text.
+    pub span: Range<usize>,
+}
+
+/// One `field` of a [`ServiceRecipe`]: an attribute that becomes a named member
+/// of the service's config struct.
+///
+/// `expr` is the Rust expression the value is written as, with the attribute's
+/// own name standing for its literal (`"timeout_ms as u64"`). The checks are
+/// data too: `min` is the buffer floor a protocol cannot work below, `range` a
+/// numeric window, and `non_empty` a value that cannot be blank.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceField {
+    /// The element attribute this field reads.
+    pub name: String,
+    /// The Rust expression template, or `None` for the literal alone.
+    pub expr: Option<String>,
+    /// The smallest value the field accepts, in bytes.
+    pub min: Option<u32>,
+    /// The inclusive numeric window the field accepts.
+    pub range: Option<(u32, u32)>,
+    /// Whether an empty string is refused.
+    pub non_empty: bool,
+    /// Span of the `field` node in the schema text.
     pub span: Range<usize>,
 }
 
@@ -658,6 +722,7 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
     let mut see_also = Vec::new();
     let mut recipe_node: Option<&KdlNode> = None;
     let mut device_recipe_node: Option<&KdlNode> = None;
+    let mut service_recipe_node: Option<&KdlNode> = None;
     for child in children(node) {
         match child.name().value() {
             "summary" | "description" => {
@@ -702,6 +767,17 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
                     device_recipe_node = Some(child);
                 }
             }
+            "service_recipe" => {
+                if service_recipe_node.is_some() {
+                    errors.push(err(
+                        node_range(child),
+                        "`service_recipe` given twice",
+                        "keep one",
+                    ));
+                } else {
+                    service_recipe_node = Some(child);
+                }
+            }
             "example" => parse_example(child, &mut examples, errors),
             "see_also" => {
                 for (target, target_span) in positional_strings(child, errors) {
@@ -719,8 +795,8 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
             other => errors.push(err(
                 node_range(child),
                 format!("unknown node `{other}` in element `{tag}`"),
-                "expected summary, description, attr, recipe, device_recipe, example or \
-                 see_also",
+                "expected summary, description, attr, recipe, device_recipe, service_recipe, \
+                 example or see_also",
             )),
         }
     }
@@ -731,6 +807,8 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
         recipe_node.and_then(|node| parse_recipe(node, &tag, &section_name, &attrs, errors));
     let device_recipe = device_recipe_node
         .and_then(|node| parse_device_recipe(node, &tag, &section_name, &attrs, errors));
+    let service_recipe = service_recipe_node
+        .and_then(|node| parse_service_recipe(node, &tag, &section_name, &attrs, errors));
 
     if summary.is_none() {
         errors.push(err(
@@ -757,6 +835,7 @@ fn parse_element(node: &KdlNode, schema: &mut Schema, errors: &mut Vec<SchemaErr
         see_also,
         recipe,
         device_recipe,
+        service_recipe,
         span,
     });
 }
@@ -1368,6 +1447,413 @@ fn parse_device_arg(
         direction,
         span,
     });
+}
+
+/// Parse and validate the `service_recipe` child of a `# services` element.
+///
+/// A service is software over a network component, so the recipe names that
+/// component's attribute, the runtime feature, the field type and constructor,
+/// and one `field` or `arg` per remaining attribute. Every rule is checked
+/// here, with the offending node's span, so a bad recipe is a load error.
+fn parse_service_recipe(
+    node: &KdlNode,
+    tag: &str,
+    section: &str,
+    attrs: &[AttrDef],
+    errors: &mut Vec<SchemaError>,
+) -> Option<ServiceRecipe> {
+    let span = node_range(node);
+
+    if section != "services" {
+        errors.push(err(
+            span,
+            "`service_recipe` is for services",
+            "only an element in `# services` rides on a network component",
+        ));
+        return None;
+    }
+
+    if !attrs
+        .iter()
+        .any(|attr| attr.name == "id" && attr.kind == AttrKind::Ident)
+    {
+        errors.push(err(
+            span.clone(),
+            format!("`service_recipe` element `{tag}` has no `id`"),
+            "write `attr \"id\" kind=\"ident\" required=#true`",
+        ));
+    }
+
+    for name in [
+        "network",
+        "feature",
+        "type",
+        "new",
+        "config",
+        "heap_bytes",
+        "requires_embassy",
+    ] {
+        if children(node)
+            .iter()
+            .filter(|child| child.name().value() == name)
+            .count()
+            > 1
+        {
+            errors.push(err(
+                node_range(node),
+                format!("`{name}` given twice"),
+                "keep one",
+            ));
+        }
+    }
+
+    let Some((network, network_span)) = child_string(node, "network", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`service_recipe` has no `network`",
+            "name the element's `ref` attribute, e.g. `network \"network\"`",
+        ));
+        return None;
+    };
+    if !attrs
+        .iter()
+        .any(|attr| attr.name == network && matches!(attr.kind, AttrKind::Ref { .. }))
+    {
+        errors.push(err(
+            network_span,
+            format!("`<{tag}>` has no ref attribute `{network}`"),
+            "`network` must name the element's `$` reference attribute",
+        ));
+        return None;
+    }
+
+    let Some((feature, feature_span)) = child_string(node, "feature", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`service_recipe` has no `feature`",
+            "name the `espforge-runtime` feature, e.g. `feature \"ntp\"`",
+        ));
+        return None;
+    };
+    if feature.is_empty() {
+        errors.push(err(
+            feature_span,
+            "`feature` is empty",
+            "name the `espforge-runtime` feature",
+        ));
+        return None;
+    }
+
+    let Some((ty, ty_span)) = child_string(node, "type", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`service_recipe` has no `type`",
+            "name the field's Rust type, e.g. `type \"espforge_runtime::NtpClient\"`",
+        ));
+        return None;
+    };
+    if !is_rust_path(&ty) {
+        errors.push(err(
+            ty_span,
+            "`type` must be a Rust path such as `espforge_runtime::NtpClient`",
+            "segments are identifiers separated by `::`",
+        ));
+        return None;
+    }
+
+    let Some((new, new_span)) = child_string(node, "new", errors) else {
+        errors.push(err(
+            span.clone(),
+            "`service_recipe` has no `new`",
+            "name the constructor, e.g. `new \"espforge_runtime::NtpClient::new\"`",
+        ));
+        return None;
+    };
+    if !is_rust_path(&new) {
+        errors.push(err(
+            new_span,
+            "`new` must be a Rust path such as `espforge_runtime::NtpClient::new`",
+            "segments are identifiers separated by `::`",
+        ));
+        return None;
+    }
+
+    let config = match child_string(node, "config", errors) {
+        Some((config, config_span)) => {
+            if !is_rust_path(&config) {
+                errors.push(err(
+                    config_span,
+                    "`config` must be a Rust path such as `espforge_runtime::NtpConfig`",
+                    "segments are identifiers separated by `::`",
+                ));
+                return None;
+            }
+            Some(config)
+        }
+        None => None,
+    };
+
+    let heap_bytes = match children(node)
+        .iter()
+        .find(|child| child.name().value() == "heap_bytes")
+    {
+        Some(child) => match positional_u32(child, errors) {
+            Some(0) => {
+                errors.push(err(
+                    node_range(child),
+                    "`heap_bytes` must be positive",
+                    "give the number of bytes the service needs",
+                ));
+                None
+            }
+            bytes => bytes,
+        },
+        None => None,
+    };
+
+    let requires_embassy = child_flag(node, "requires_embassy", true, errors);
+
+    let mut fields: Vec<ServiceField> = Vec::new();
+    let mut args: Vec<String> = Vec::new();
+    for child in children(node) {
+        match child.name().value() {
+            // The scalars were collected above, by name.
+            "network" | "feature" | "type" | "new" | "config" | "heap_bytes"
+            | "requires_embassy" => {}
+            "field" => parse_service_field(child, tag, attrs, &mut fields, errors),
+            "arg" => {
+                let mut names = positional_strings(child, errors);
+                if names.is_empty() {
+                    errors.push(err(
+                        node_range(child),
+                        "`arg` has no name",
+                        "write `arg \"attr\"`",
+                    ));
+                    continue;
+                }
+                let (name, name_span) = names.remove(0);
+                if args.contains(&name) {
+                    errors.push(err(
+                        name_span,
+                        format!("duplicate `arg` `{name}`"),
+                        "each argument is declared once",
+                    ));
+                } else if !attrs.iter().any(|attr| attr.name == name) {
+                    errors.push(err(
+                        name_span,
+                        format!("`<{tag}>` has no attribute `{name}`"),
+                        "an `arg` reads one of the element's own attributes",
+                    ));
+                } else {
+                    args.push(name);
+                }
+            }
+            other => errors.push(err(
+                node_range(child),
+                format!("unknown node `{other}` in `service_recipe` of `{tag}`"),
+                "expected network, feature, type, new, config, heap_bytes, requires_embassy, \
+                 field or arg",
+            )),
+        }
+    }
+
+    // A slot per attribute, and no attribute without a slot: a service recipe
+    // that reads an attribute nowhere is a mistake, not a fixed value.
+    for attr in attrs {
+        if attr.name == "id" || attr.name == network {
+            continue;
+        }
+        if !fields.iter().any(|field| field.name == attr.name)
+            && !args.iter().any(|arg| *arg == attr.name)
+        {
+            errors.push(err(
+                attr.span.clone(),
+                format!("`{tag}.{}` has no `field` or `arg` in `service_recipe`", attr.name),
+                "a service recipe names every attribute except `id` and its `network`",
+            ));
+        }
+    }
+
+    Some(ServiceRecipe {
+        network,
+        feature,
+        ty,
+        new,
+        config,
+        heap_bytes,
+        requires_embassy,
+        fields,
+        args,
+        span,
+    })
+}
+
+/// Parse and validate one `field` of a [`ServiceRecipe`].
+fn parse_service_field(
+    node: &KdlNode,
+    tag: &str,
+    attrs: &[AttrDef],
+    fields: &mut Vec<ServiceField>,
+    errors: &mut Vec<SchemaError>,
+) {
+    let span = node_range(node);
+    let mut names = positional_strings(node, errors);
+    if names.is_empty() {
+        errors.push(err(span, "`field` has no name", "write `field \"attr\"`"));
+        return;
+    }
+    let (name, name_span) = names.remove(0);
+    if fields.iter().any(|field| field.name == name) {
+        errors.push(err(
+            name_span,
+            format!("duplicate `field` `{name}`"),
+            "each config field is declared once",
+        ));
+        return;
+    }
+    if !attrs.iter().any(|attr| attr.name == name) {
+        errors.push(err(
+            name_span,
+            format!("`<{tag}>` has no attribute `{name}`"),
+            "a `field` reads one of the element's own attributes",
+        ));
+        return;
+    }
+
+    let expr = prop(node, "as", errors).map(|(expr, _)| expr);
+    let min = prop_u32(node, "min", errors);
+    let range = match prop(node, "range", errors) {
+        Some((text, range_span)) => match parse_range(&text) {
+            Some((low, high)) if low <= high => Some((low, high)),
+            _ => {
+                errors.push(err(
+                    range_span,
+                    format!("range `{text}` is not `low..=high`"),
+                    "write two unsigned integers separated by `..=`, as in `range=\"1..=65535\"`",
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+    let non_empty = prop_flag(node, "non_empty");
+
+    for child in children(node) {
+        errors.push(err(
+            node_range(child),
+            format!("unknown node `{}` in `field` `{name}`", child.name().value()),
+            "a `field` is a name plus `as=`, `min=`, `range=` and `non_empty=` properties",
+        ));
+    }
+
+    fields.push(ServiceField {
+        name,
+        expr,
+        min,
+        range,
+        non_empty,
+        span,
+    });
+}
+
+/// A numeric property like `min=4096`, with its span.
+fn prop_u32(node: &KdlNode, key: &str, errors: &mut Vec<SchemaError>) -> Option<u32> {
+    let entry = node
+        .entries()
+        .iter()
+        .find(|entry| entry.name().is_some_and(|name| name.value() == key))?;
+    match entry.value().as_integer() {
+        Some(value) if (0..=u32::MAX as i128).contains(&value) => Some(value as u32),
+        Some(value) => {
+            errors.push(err(
+                entry_range(entry),
+                format!("`{key}` must be an unsigned 32-bit number"),
+                format!("`{value}` is out of range"),
+            ));
+            None
+        }
+        None => match entry.value().as_string().and_then(|text| text.parse::<u32>().ok()) {
+            Some(value) => Some(value),
+            None => {
+                errors.push(err(
+                    entry_range(entry),
+                    format!("`{key}` must be an unsigned 32-bit number"),
+                    "write it as an integer, as in `min=4096`",
+                ));
+                None
+            }
+        },
+    }
+}
+
+/// A boolean property like `non_empty=#true`; absent means false.
+fn prop_flag(node: &KdlNode, key: &str) -> bool {
+    node.entries()
+        .iter()
+        .filter(|entry| entry.name().is_some_and(|name| name.value() == key))
+        .any(|entry| entry.value().as_bool() != Some(false))
+}
+
+/// The first positional argument of `node` as an unsigned 32-bit number.
+fn positional_u32(node: &KdlNode, errors: &mut Vec<SchemaError>) -> Option<u32> {
+    let Some(entry) = node.entries().iter().find(|entry| entry.name().is_none()) else {
+        errors.push(err(
+            node_range(node),
+            format!("`{}` takes a number", node.name().value()),
+            "write it as an unsigned integer, as in `heap_bytes 98304`",
+        ));
+        return None;
+    };
+    match entry.value().as_integer() {
+        Some(value) if (0..=u32::MAX as i128).contains(&value) => Some(value as u32),
+        Some(value) => {
+            errors.push(err(
+                entry_range(entry),
+                format!("`{}` must be an unsigned 32-bit number", node.name().value()),
+                format!("`{value}` is out of range"),
+            ));
+            None
+        }
+        None => match entry.value().as_string().and_then(|text| text.parse::<u32>().ok()) {
+            Some(value) => Some(value),
+            None => {
+                errors.push(err(
+                    entry_range(entry),
+                    format!("`{}` takes a number", node.name().value()),
+                    "write it as an unsigned integer, as in `heap_bytes 98304`",
+                ));
+                None
+            }
+        },
+    }
+}
+
+/// A bare or `#true`/`#false` child flag, defaulting to `default` when absent.
+fn child_flag(node: &KdlNode, name: &str, default: bool, errors: &mut Vec<SchemaError>) -> bool {
+    let Some(child) = children(node)
+        .iter()
+        .find(|child| child.name().value() == name)
+    else {
+        return default;
+    };
+    let Some(entry) = child.entries().iter().find(|entry| entry.name().is_none()) else {
+        return true;
+    };
+    match entry.value().as_bool() {
+        Some(value) => value,
+        None => match entry.value().as_string() {
+            Some("true") => true,
+            Some("false") => false,
+            _ => {
+                errors.push(err(
+                    entry_range(entry),
+                    format!("`{name}` takes #true or #false"),
+                    "KDL v2 booleans are #true / #false",
+                ));
+                default
+            }
+        },
+    }
 }
 
 fn parse_example(node: &KdlNode, examples: &mut Vec<Example>, errors: &mut Vec<SchemaError>) {

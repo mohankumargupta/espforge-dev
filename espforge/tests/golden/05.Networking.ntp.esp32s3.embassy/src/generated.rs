@@ -36,7 +36,7 @@ impl Services {
                 components.home.stack(),
                 espforge_runtime::NtpConfig {
                     server: "pool.ntp.org",
-                    port: 123u16,
+                    port: 123u32 as u16,
                     timeout_ms: 5000u32 as u64,
                 },
             ),
