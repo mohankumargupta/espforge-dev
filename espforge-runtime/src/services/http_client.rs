@@ -164,9 +164,10 @@ async fn request<'a>(
     let mut length = [0u8; 10];
     let content_length = body.map(|(_, payload)| decimal(payload.len() as u32, &mut length));
 
-    let headers = request_headers(host, body, content_length);
+    let mut header_buf = [("", ""); 4];
+    let headers = request_headers(host, body, content_length, &mut header_buf);
     connection
-        .initiate_request(true, method, path, &headers)
+        .initiate_request(true, method, path, headers)
         .await
         .map_err(|_| HttpError::Request)?;
 
@@ -201,21 +202,28 @@ async fn request<'a>(
 
 /// The request headers edge-http wants: `Host`, `Connection: close` and, when
 /// there is a body, `Content-Type`/`Content-Length`.
-fn request_headers<'a>(
+///
+/// Headers that do not apply are left out rather than sent with an empty
+/// value: edge-http parses the request's own headers, and an empty
+/// `Content-Length` makes it panic in `BodyType::from_header`.
+fn request_headers<'a, 'b>(
     host: &'a str,
     body: Option<(&'a str, &'a [u8])>,
     length: Option<&'a str>,
-) -> [(&'a str, &'a str); 4] {
-    let (content_type, content_length) = match (body, length) {
-        (Some((content_type, _)), Some(length)) => (content_type, length),
-        _ => ("", ""),
-    };
-    [
-        ("Host", host),
-        ("Connection", "close"),
-        ("Content-Type", content_type),
-        ("Content-Length", content_length),
-    ]
+    buf: &'b mut [(&'a str, &'a str); 4],
+) -> &'b [(&'a str, &'a str)] {
+    let mut count = 0;
+    buf[count] = ("Host", host);
+    count += 1;
+    buf[count] = ("Connection", "close");
+    count += 1;
+    if let (Some((content_type, _)), Some(length)) = (body, length) {
+        buf[count] = ("Content-Type", content_type);
+        count += 1;
+        buf[count] = ("Content-Length", length);
+        count += 1;
+    }
+    &buf[..count]
 }
 
 /// Split `http[s]://host[:port]/path` into its parts. `default_port` fills in
@@ -233,11 +241,14 @@ pub(crate) fn parse_url(url: &str, default_port: u16) -> Result<(&str, u16, &str
         return Err(HttpError::BadUrl);
     }
     match authority.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => {
+        Some((host, port)) => {
+            if host.is_empty() {
+                return Err(HttpError::BadUrl);
+            }
             let port = port.parse().map_err(|_| HttpError::BadUrl)?;
             Ok((host, port, path))
         }
-        _ => Ok((authority, default_port, path)),
+        None => Ok((authority, default_port, path)),
     }
 }
 
@@ -280,6 +291,34 @@ mod tests {
         );
         assert_eq!(parse_url("/status", 80), Err(HttpError::BadUrl));
         assert_eq!(parse_url("http://:80/x", 80), Err(HttpError::BadUrl));
+    }
+
+    #[test]
+    fn get_headers_omit_the_body_headers() {
+        let mut buf = [("", ""); 4];
+        let headers = request_headers("example.com", None, None, &mut buf);
+        assert_eq!(headers, [("Host", "example.com"), ("Connection", "close")]);
+    }
+
+    #[test]
+    fn post_headers_carry_the_body_length() {
+        let mut buf = [("", ""); 4];
+        let payload = b"hi";
+        let headers = request_headers(
+            "example.com",
+            Some(("text/plain", payload)),
+            Some("2"),
+            &mut buf,
+        );
+        assert_eq!(
+            headers,
+            [
+                ("Host", "example.com"),
+                ("Connection", "close"),
+                ("Content-Type", "text/plain"),
+                ("Content-Length", "2"),
+            ]
+        );
     }
 
     #[test]
