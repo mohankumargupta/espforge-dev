@@ -1,15 +1,16 @@
 //! Sensirion SCD40/SCD41 CO2, temperature and humidity sensor driver.
 //!
-//! The part has one fixed I2C address and a command interface: a command is a
-//! 16-bit word, and a reading is a command followed by a read. Every data word
-//! carries a CRC-8 byte, so a corrupt transfer is refused rather than reported
-//! as a measurement.
+//! The part answers at one fixed I2C address, which the schema declares
+//! (`needs_address "0x62"`) so lowering can refuse a component wired to any
+//! other one. The handle it gets carries that address, so this driver never
+//! names one: `.espf` stays the single source of truth.
+//!
+//! The part has a command interface: a command is a 16-bit word, and a reading
+//! is a command followed by a read. Every data word carries a CRC-8 byte, so a
+//! corrupt transfer is refused rather than reported as a measurement.
 
 use esp_hal::Blocking;
-use espforge_runtime::I2cBus;
-
-/// The SCD4x's fixed I2C address.
-pub const ADDRESS: u8 = 0x62;
+use espforge_runtime::I2cDevice;
 
 /// `start_periodic_measurement`.
 const START_PERIODIC_MEASUREMENT: u16 = 0x21b1;
@@ -38,16 +39,16 @@ pub struct Measurement {
     pub humidity_centi_percent: u16,
 }
 
-/// An SCD4x on an I2C bus.
+/// An SCD4x on an addressed I2C endpoint.
 pub struct Scd4x {
-    bus: I2cBus<Blocking>,
+    device: I2cDevice<Blocking>,
 }
 
 impl Scd4x {
-    /// Take the bus handle. The sensor needs [`start`](Self::start) before its
-    /// first reading.
-    pub fn new(bus: I2cBus<Blocking>) -> Self {
-        Self { bus }
+    /// Take the addressed device handle. The sensor needs
+    /// [`start`](Self::start) before its first reading.
+    pub fn new(device: I2cDevice<Blocking>) -> Self {
+        Self { device }
     }
 
     /// Begin periodic measurement (one sample every five seconds).
@@ -65,8 +66,8 @@ impl Scd4x {
     pub fn read(&mut self) -> Result<Measurement, Scd4xError> {
         let command = READ_MEASUREMENT.to_be_bytes();
         let mut raw = [0u8; 9];
-        self.bus
-            .write_read(ADDRESS, &command, &mut raw)
+        self.device
+            .write_read(&command, &mut raw)
             .map_err(|_| Scd4xError::Bus)?;
         let co2 = word(&raw[0..3])?;
         let temperature = word(&raw[3..6])? as i16;
@@ -80,8 +81,8 @@ impl Scd4x {
     }
 
     fn command(&mut self, command: u16) -> Result<(), Scd4xError> {
-        self.bus
-            .write(ADDRESS, &command.to_be_bytes())
+        self.device
+            .write(&command.to_be_bytes())
             .map_err(|_| Scd4xError::Bus)
     }
 }

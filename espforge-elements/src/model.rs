@@ -6,7 +6,7 @@
 //! conflict: validation and construction are the same act.
 //!
 //! The graph is cut to what the elements need. Buses (`add_bus`, `bus`,
-//! `used_by`) return in phase 3, shared peripherals (`claim_peripheral`) with
+//! `bus_by_name`) return in phase 3, shared peripherals (`claim_peripheral`) with
 //! the elements that share them, and the bus kinds join [`OwnerKind`] with
 //! their buses. Recipe components share the one [`OwnerKind::Recipe`] variant.
 
@@ -250,8 +250,6 @@ pub enum Bus {
         scl: ClaimedPin,
         /// Bus frequency in kHz.
         khz: u32,
-        /// The component riding on this bus, once one is attached.
-        used_by: Option<Ident>,
     },
     Spi {
         id: Ident,
@@ -528,6 +526,17 @@ impl Component {
             Component::Spi(_) => "spi_component",
             Component::Uart(_) => "uart_component",
             Component::WifiStation(_) => "wifi_station",
+        }
+    }
+
+    /// The I2C address this component declares, if any.
+    ///
+    /// A device's recipe compares its `needs_address` against this, so a part
+    /// that needs an `I2cDevice` is refused at lowering, not by `rustc`.
+    pub fn address(&self) -> Option<u8> {
+        match self {
+            Component::I2c(component) => component.address,
+            _ => None,
         }
     }
 }

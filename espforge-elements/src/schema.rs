@@ -79,6 +79,8 @@ mod tests {
         assert_eq!(recipe.new, "espforge_drivers::Ssd1306Display::new");
         assert!(!recipe.takes_bus);
         assert_eq!(recipe.deps, ["embedded-graphics"]);
+        // A display declares its own address in the `.espf`; any usable one.
+        assert_eq!(recipe.address, espforge_schema::AddressNeed::Any);
         let args: Vec<&str> = recipe.args.iter().map(|arg| arg.name.as_str()).collect();
         assert_eq!(args, ["size", "rotation"]);
         assert!(recipe.args[0].pin.is_none());
@@ -89,6 +91,7 @@ mod tests {
         let recipe = ili9341.device_recipe.as_ref().unwrap();
         assert_eq!(recipe.expect, "spi_component");
         assert!(recipe.takes_bus);
+        assert_eq!(recipe.address, espforge_schema::AddressNeed::None);
         assert_eq!(
             recipe.taken.as_deref(),
             Some("the display's SPI bus was already taken")
@@ -112,5 +115,16 @@ mod tests {
     fn the_sensor_recipe_names_no_dependency() {
         let scd4x = schema().element("scd4x").unwrap();
         assert!(scd4x.device_recipe.as_ref().unwrap().deps.is_empty());
+    }
+
+    /// The SCD4x answers at one address only, and the schema is the single
+    /// place that says so: lowering checks the component against it.
+    #[test]
+    fn the_sensor_recipe_fixes_its_address() {
+        let scd4x = schema().element("scd4x").unwrap();
+        assert_eq!(
+            scd4x.device_recipe.as_ref().unwrap().address,
+            espforge_schema::AddressNeed::Fixed(0x62)
+        );
     }
 }

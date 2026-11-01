@@ -1,6 +1,6 @@
 //! `<uart_component>`: the framing settings of one UART port.
 //!
-//! Like I2C, the port is built inside the initialiser: one component per
+//! Unlike I2C, the port is built inside the initialiser: one component per
 //! `<uart>`, and the generated field owns the driver directly.
 
 use espf::context::ParsedNode;

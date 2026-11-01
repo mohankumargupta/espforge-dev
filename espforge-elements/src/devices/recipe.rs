@@ -15,11 +15,11 @@
 use espf::context::ParsedNode;
 use espf::diag::node_span;
 use espforge_diagnostics::codes;
-use espforge_schema::{DeviceArg, DeviceRecipe};
+use espforge_schema::{AddressNeed, DeviceArg, DeviceRecipe};
 
 use crate::attrs;
 use crate::devices::{
-    invalid_element, invalid_id, requires_blocking, unknown_component, unknown_gpio,
+    invalid_element, invalid_id, requires_blocking, span_of, unknown_component, unknown_gpio,
     wrong_direction,
 };
 use crate::element::{Element, LowerCx, Reported, is_rust_ident};
@@ -101,13 +101,50 @@ impl Element for DeviceRecipeElement {
         // differ: clone before the claims take `cx` mutably again.
         let component_tag = component.tag();
         let bus_component = component.id().clone();
+        let component_address = component.address();
         if component_tag != recipe.expect {
             return Err(unknown_component(
                 cx, node, tag, &id, bus_attr, &recipe.expect,
             ));
         }
 
-        // 5. one device per bus component when the device takes the handle.
+        // 5. an addressed part needs an addressed component: a driver that
+        // takes an `I2cDevice` cannot be handed a raw bus handle, and the
+        // `.espf` file promises the compiler catches that, not `rustc`.
+        match (recipe.address, component_address) {
+            (AddressNeed::None, _) | (AddressNeed::Any, Some(_)) => {}
+            (AddressNeed::Any, None) | (AddressNeed::Fixed(_), None) => {
+                let fixed = match recipe.address {
+                    AddressNeed::Fixed(fixed) => format!(" (this part is at 0x{fixed:02X})"),
+                    _ => String::new(),
+                };
+                return Err(cx.report(
+                    codes::DEVICE_INVALID,
+                    span_of(node, bus_attr),
+                    format!("{} needs an i2c address", recipe.kind),
+                    format!(
+                        "<{tag} id=\"{}\"> needs <{component_tag} id=\"{component_name}\"> to \
+                         declare an `address`{fixed}; it is a bus-only component",
+                        id.raw
+                    ),
+                ));
+            }
+            (AddressNeed::Fixed(want), Some(got)) if got != want => {
+                return Err(cx.report(
+                    codes::DEVICE_INVALID,
+                    span_of(node, bus_attr),
+                    format!("{} address mismatch", recipe.kind),
+                    format!(
+                        "<{tag} id=\"{}\"> is fixed at address 0x{want:02X}, but \
+                         <{component_tag} id=\"{component_name}\"> declares 0x{got:02X}",
+                        id.raw
+                    ),
+                ));
+            }
+            (AddressNeed::Fixed(_), Some(_)) => {}
+        }
+
+        // 6. one device per bus component when the device takes the handle.
         if recipe.takes_bus {
             let taken = cx
                 .devices()
@@ -127,7 +164,7 @@ impl Element for DeviceRecipeElement {
             }
         }
 
-        // 6. the auxiliary control lines, claimed in recipe order.
+        // 7. the auxiliary control lines, claimed in recipe order.
         let mut pins: Vec<(String, ClaimedPin)> = Vec::new();
         for arg in &recipe.args {
             if arg.pin.is_none() {
@@ -162,10 +199,10 @@ impl Element for DeviceRecipeElement {
             pins.push((arg.name.clone(), claim));
         }
 
-        // 7. the constructor arguments, in recipe order.
+        // 8. the constructor arguments, in recipe order.
         let args = arguments(node, self.element(), recipe, &pins);
 
-        // 8. the field type, with its command slots filled.
+        // 9. the field type, with its command slots filled.
         let ty = fill(&recipe.ty, &recipe.args, &args);
 
         cx.push_device(Device {

@@ -38,10 +38,11 @@ Six checks. 1–3 are "it still works and the port is faithful"; 4–6 are "the 
    `i2c_scanner` 2, `spi_example` 2, `spi_example_async` 2, `uart_example` 2,
    `uart_example_async` 2 (`esp32c3` + `esp32s3`, the runtime each example declares).
 2. **It still compiles.** `cargo test -p espforge --test generated_projects_compile -- --ignored`
-   for the existing 4 cases plus 6 bus cells: `i2c_example`, `spi_example`, `uart_example`
-   (`esp32c3`/`blocking`) and their `_async` twins (`esp32c3`/`embassy`), plus one inline spec
-   using `i2c1` to prove the runtime is no longer hardcoded to `I2C0`. `i2c_scanner` is not a
-   case: it generates the same `I2cBus` init as `i2c_example`. Xtensa is still out of scope.
+   for the existing 4 cases plus the bus cells: `i2c_example`, `i2c_scanner`, `spi_example`,
+   `uart_example` (`esp32c3`/`blocking`) and their `_async` twins (`esp32c3`/`embassy`), plus a
+   multi-drop inline spec (a display and a sensor on one `<i2c>`) and one using `i2c1` to prove the
+   runtime is no longer hardcoded to `I2C0`. `i2c_scanner` is its own case because it emits the raw
+   `I2cBus` field, not the addressed `I2cDevice` one. Xtensa is still out of scope.
 3. **The diagnostics corpus.** The eight bus specs from `legacy/espforge/tests/diagnostics/` render
    byte-identically: `conflict-i2c-vs-gpio`, `conflict-spi-vs-gpio`, `conflict-spi-cs-vs-bus-pin`,
    `conflict-uart-vs-i2c`, `i2c-bad-id`, `i2c-bad-frequency`, `i2c-component-bad-address`,
@@ -83,7 +84,7 @@ from `legacy/espforge/tests/diagnostics/expected/*.txt`.
 | `PinUse` | `Bidirectional` | `Bidirectional` | `Unspecified` |
 | config | `frequency`, default `100kHz` | `mode` 0..=3, `frequency` optional | — |
 | other claims | none | none | the peripheral name (`E0704`) |
-| bus record | `{ id, peripheral, sda, scl, khz, used_by }` | `{ id, peripheral, sclk, mosi, miso, khz, mode }` | `{ id, peripheral, tx, rx, used_by }` |
+| bus record | `{ id, peripheral, sda, scl, khz }` | `{ id, peripheral, sclk, mosi, miso, khz, mode }` | `{ id, peripheral, tx, rx, used_by }` |
 | owner kind | `OwnerKind::I2c` | `OwnerKind::Spi` | `OwnerKind::Uart` |
 
 Two asymmetries are real and must be ported exactly: `<spi>`'s `frequency` has **no schema
@@ -97,11 +98,11 @@ defaults to `100kHz` in the schema; and only `<uart>` claims a physical peripher
 |---|---|---|---|
 | reference | `i2c="$id"` | `spi="$id"` | `uart="$id"` |
 | own attributes | optional hex `address` | `cs` (pin number or `<gpio>` id), `mode` | `baud_rate`, `parity`, `stop_bits` |
-| components per bus | exactly one (`E0611`) | any number | exactly one (`E0612`) |
-| emitted field type | `I2cBus<runtime>` | `SpiDevice<runtime>` | `UartDevice<runtime>` |
-| emitted construction | inline in the init | bus `let` **before** `Self`, then the device | inline in the init |
+| components per bus | any number, each at its own address (`E0708` on a clash) | any number | exactly one (`E0612`) |
+| emitted field type | `I2cDevice<runtime>`, or `I2cBus<runtime>` with no `address` | `SpiDevice<runtime>` | `UartDevice<runtime>` |
+| emitted construction | bus `let` **before** `Self`, then the endpoint | bus `let` **before** `Self`, then the device | inline in the init |
 | id rule | Rust identifier (`E0614`) | same | same |
-| extra checks | `address` must be hex (`E0603` wording) | `cs` ref must exist (`E0607`) | `baud_rate > 0` (`E0610`) |
+| extra checks | `address` must be hex in `0x08..=0x77` (`E0603`) | `cs` ref must exist (`E0607`) | `baud_rate > 0` (`E0610`) |
 
 `<spi_component mode>` is read and stored but **not** used for the bus configuration (the `<spi>`
 mode wins); it survives because `board_json` emits it (`legacy/espforge-core/src/board_json.rs`) and
@@ -110,35 +111,40 @@ emitter, not the IR, not the JSON (see Q4).
 
 ### 2.3 The emitted Rust
 
-Measured from the goldens. I2C and UART build inside the initialiser:
+Measured from the goldens. I2C and SPI build the bus in a prelude `let`, because a device takes its
+bus handle by value and the handle is shared; UART builds inside the initialiser:
 
 ```rust
 pub struct Components {
-    pub i2c_tester: espforge_runtime::I2cBus<esp_hal::Blocking>,
+    pub i2c_tester: espforge_runtime::I2cDevice<esp_hal::Blocking>,
 }
 impl Components {
     pub fn new(registry: &mut PeripheralRegistry) -> Self {
+        // SAFETY: espforge checked that no other component uses this
+        // peripheral or GPIO6/GPIO7.
+        let i2c0_bus = espforge_runtime::I2cBus::build(
+                unsafe { registry.peripherals.I2C0.clone_unchecked() },
+                unsafe { registry.peripherals.GPIO6.clone_unchecked() },
+                unsafe { registry.peripherals.GPIO7.clone_unchecked() },
+                espforge_runtime::I2cConfig {
+                    frequency: esp_hal::time::Rate::from_khz(100),
+                },
+            )
+            .expect("I2C bus configuration failed");
         Self {
-            // SAFETY: espforge checked that no other component uses this
-            // peripheral or GPIO6/GPIO7.
-            i2c_tester: espforge_runtime::I2cBus::build(
-                    unsafe { registry.peripherals.I2C0.clone_unchecked() },
-                    unsafe { registry.peripherals.GPIO6.clone_unchecked() },
-                    unsafe { registry.peripherals.GPIO7.clone_unchecked() },
-                    espforge_runtime::I2cConfig {
-                        frequency: esp_hal::time::Rate::from_khz(100),
-                    },
-                )
-                .expect("I2C bus configuration failed"),
+            i2c_tester: espforge_runtime::I2cDevice::new(i2c0_bus, 66),
         }
     }
 }
 ```
 
-UART is the same shape with `UART1`/`GPIO6`/`GPIO5`, `UartConfig { baudrate, data_bits:
-esp_hal::uart::DataBits::_8, parity, stop_bits }` and `.expect("UART configuration failed")`.
+A component with no `address` is the raw bus, and its initialiser is `i2c_scanner: i2c0_bus`.
 
-SPI is the one that needs a prelude, because `SpiDevice::new` takes the bus by value and the bus is
+UART is the one that builds inside the initialiser, with `UART1`/`GPIO6`/`GPIO5`, `UartConfig {
+baudrate, data_bits: esp_hal::uart::DataBits::_8, parity, stop_bits }` and `.expect("UART
+configuration failed")`.
+
+SPI has the same prelude shape, because `SpiDevice::new` takes the bus by value and the bus is
 shared:
 
 ```rust
@@ -336,7 +342,7 @@ element "uart" section="peripherals" {
 element "i2c_component" section="components" {
     attr "id" kind="ident" required=#true
     attr "i2c" kind="ref" to="i2c" required=#true
-    attr "address" kind="hex" { help "Omit for a bus-only component (for example an I2C scanner)." }
+    attr "address" kind="hex" { help "7-bit address in 0x08..=0x77. Omit for raw bus access (an I2C scanner)." }
     …
 }
 
@@ -468,7 +474,7 @@ from `chip.json` (and the `chip` fallback), `chip/` gated by the option, and an 
 
 ### T2 — `<i2c>` and `<i2c_component>`, end to end
 
-- `espforge-diagnostics`: `E0504`, `E0505`, `E0506`, `E0603`, `E0611`, `E0613`, `E0614`, `E0701`,
+- `espforge-diagnostics`: `E0504`, `E0505`, `E0506`, `E0603`, `E0613`, `E0614`, `E0701`, `E0708`,
   `E0705`, and the reachable-range test.
 - `espforge-elements`: `Bus`/`BusId`/`PeripheralClaim`, the `I2c`/`I2cComponent` owner kinds,
   `LowerCx::{add_bus,bus,bus_mut}`, `conflict_diagnostic`'s i2c arms (`pin conflict`, `i2c wiring`),
@@ -486,8 +492,9 @@ from `chip.json` (and the `chip` fallback), `chip/` gated by the option, and an 
 **Verify:** 20/20 — the 14 current cells plus 6 new (`i2c_example` and `i2c_scanner` × c3/s3
 blocking, `i2c_example_async` × c3/s3 embassy). Unit tests for a valid bus (pins claimed
 `Bidirectional`, `khz` from `100kHz`), a bad id, a bad frequency, `sda == scl`
-(`i2c wiring`), a bus pin on a declared `<gpio>` (`pin conflict`, pointed at the gpio), a second
-`<i2c_component>` on one bus (`E0611`), an unknown `$i2c9`, and a `0xZZ` address. The inline
+(`i2c wiring`), a bus pin on a declared `<gpio>` (`pin conflict`, pointed at the gpio), two
+endpoints sharing one address (`E0708`), a reserved address (`E0603`), an unknown `$i2c9`, and a
+`0xZZ` address. The inline
 compile case is expected to tell us whether the chip has `I2C1`; if it does not, the case moves to
 `esp32s3` and the reason is recorded in this file.
 

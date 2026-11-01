@@ -547,7 +547,6 @@ mod tests {
             sda,
             scl,
             khz,
-            used_by,
         } = &board.resources.buses()[0]
         else {
             panic!("the bus is an i2c bus");
@@ -555,10 +554,7 @@ mod tests {
         assert_eq!(id.raw, "i2c0");
         assert_eq!(peripheral, "I2C0");
         assert_eq!((sda.pin().0, scl.pin().0, *khz), (6, 7, 100));
-        assert_eq!(
-            used_by.as_ref().map(|id| id.raw.as_str()),
-            Some("i2c_tester")
-        );
+        assert_eq!(component.address, None, "no address is the raw bus handle");
         assert_eq!(
             board.resources.claim_of(Pin(6)).unwrap().need,
             PinUse::Bidirectional
@@ -619,18 +615,93 @@ mod tests {
     }
 
     #[test]
-    fn one_i2c_bus_takes_exactly_one_component() {
+    fn two_endpoints_share_one_i2c_bus() {
         let src = I2C.replace(
             "  <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n",
-            "  <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n  <i2c_component id=\"other\" i2c=\"$i2c0\" />\n",
+            "  <i2c_component id=\"display\" i2c=\"$i2c0\" address=\"0x3C\" />\n  <i2c_component id=\"sensor\" i2c=\"$i2c0\" address=\"0x62\" />\n",
+        );
+        let board = lower_src(&src).expect("one bus, two addressed endpoints");
+        assert_eq!(board.components.len(), 2);
+        let addresses: Vec<Option<u8>> = board
+            .components
+            .iter()
+            .map(|component| component.address())
+            .collect();
+        assert_eq!(addresses, [Some(0x3C), Some(0x62)]);
+    }
+
+    #[test]
+    fn two_endpoints_with_one_address_are_a_conflict() {
+        let src = I2C.replace(
+            "  <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n",
+            "  <i2c_component id=\"display\" i2c=\"$i2c0\" address=\"0x3C\" />\n  <i2c_component id=\"other\" i2c=\"$i2c0\" address=\"0x3C\" />\n",
         );
         let errors = lower_src(&src).unwrap_err();
-        assert_eq!(errors[0].code, codes::COMPONENT_I2C_BUS_USED);
-        assert_eq!(errors[0].message, "i2c bus already used");
+        assert_eq!(errors[0].code, codes::CONFLICT_I2C_ADDRESS);
+        assert_eq!(errors[0].message, "i2c address conflict");
         assert_eq!(
             errors[0].labels[0].text,
-            "<i2c_component id=\"i2c_tester\"> and <i2c_component id=\"other\"> both use <i2c id=\"i2c0\">"
+            "<i2c_component id=\"display\"> and <i2c_component id=\"other\"> both use address 0x3C on <i2c id=\"i2c0\">"
         );
+    }
+
+    #[test]
+    fn one_address_on_two_buses_is_fine() {
+        let src = I2C
+            .replace(
+                "  <i2c id=\"i2c0\" sda=\"6\" scl=\"7\" frequency=\"100kHz\" />\n",
+                "  <i2c id=\"i2c0\" sda=\"6\" scl=\"7\" frequency=\"100kHz\" />\n  <i2c id=\"i2c1\" sda=\"2\" scl=\"3\" frequency=\"100kHz\" />\n",
+            )
+            .replace(
+                "  <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n",
+                "  <i2c_component id=\"first\" i2c=\"$i2c0\" address=\"0x3C\" />\n  <i2c_component id=\"second\" i2c=\"$i2c1\" address=\"0x3C\" />\n",
+            );
+        let board = lower_src(&src).expect("different controllers may share an address");
+        assert_eq!(board.components.len(), 2);
+    }
+
+    #[test]
+    fn reserved_i2c_addresses_are_refused() {
+        for address in [0x00u8, 0x07, 0x78, 0x7F] {
+            let src = I2C.replace(
+                "i2c=\"$i2c0\" />",
+                &format!("i2c=\"$i2c0\" address=\"0x{address:02X}\" />"),
+            );
+            let errors = lower_src(&src).unwrap_err();
+            assert_eq!(errors[0].code, codes::COMPONENT_INVALID_I2C);
+            assert_eq!(errors[0].message, "invalid i2c_component");
+            assert_eq!(
+                errors[0].labels[0].text,
+                format!(
+                    "<i2c_component id=\"i2c_tester\"> address=\"0x{address:02X}\" is reserved by the \
+                     I2C specification; usable addresses are 0x08..=0x77"
+                )
+            );
+        }
+        // The ends of the usable range lower.
+        for address in [0x08u8, 0x77] {
+            let src = I2C.replace(
+                "i2c=\"$i2c0\" />",
+                &format!("i2c=\"$i2c0\" address=\"0x{address:02X}\" />"),
+            );
+            let board = lower_src(&src).unwrap_or_else(|e| panic!("0x{address:02X}: {e:?}"));
+            assert_eq!(board.components[0].address(), Some(address));
+        }
+    }
+
+    #[test]
+    fn an_unaddressed_endpoint_beside_an_addressed_one_lowers() {
+        let src = I2C.replace(
+            "  <i2c_component id=\"i2c_tester\" i2c=\"$i2c0\" />\n",
+            "  <i2c_component id=\"scanner\" i2c=\"$i2c0\" />\n  <i2c_component id=\"sensor\" i2c=\"$i2c0\" address=\"0x62\" />\n",
+        );
+        let board = lower_src(&src).expect("a raw handle beside an endpoint");
+        let addresses: Vec<Option<u8>> = board
+            .components
+            .iter()
+            .map(|component| component.address())
+            .collect();
+        assert_eq!(addresses, [None, Some(0x62)]);
     }
 
     #[test]
@@ -1414,10 +1485,12 @@ mod tests {
     /// own: its project must not pull the graphics crate the displays need.
     #[test]
     fn a_scd4x_lowers_onto_its_i2c_component() {
-        let src = OLED.replace(
-            "<ssd1306 id=\"oled\" i2c_component=\"$oled_bus\" size=\"128x32\" rotation=\"180\" />",
-            "<scd4x id=\"air\" i2c_component=\"$oled_bus\" />",
-        );
+        let src = OLED
+            .replace(
+                "<ssd1306 id=\"oled\" i2c_component=\"$oled_bus\" size=\"128x32\" rotation=\"180\" />",
+                "<scd4x id=\"air\" i2c_component=\"$oled_bus\" />",
+            )
+            .replace("address=\"0x3C\"", "address=\"0x62\"");
         let board = lower_src(&src).expect("the sensor lowers");
         let air = &board.devices[0];
         assert_eq!(air.tag, "scd4x");
@@ -1428,6 +1501,88 @@ mod tests {
         assert!(air.pins.is_empty());
         assert_eq!(board.driver_features(), ["scd4x"]);
         assert!(board.driver_deps().is_empty());
+    }
+
+    /// A display and a sensor on one controller: the multi-drop case the
+    /// schema did not allow before, both lowering onto their own addresses.
+    #[test]
+    fn a_display_and_a_sensor_share_one_bus() {
+        let src = OLED.replace(
+            "  <i2c_component id=\"oled_bus\" i2c=\"$i2c0\" address=\"0x3C\" />\n",
+            "  <i2c_component id=\"oled_bus\" i2c=\"$i2c0\" address=\"0x3C\" />\n  <i2c_component id=\"sensor_bus\" i2c=\"$i2c0\" address=\"0x62\" />\n",
+        )
+        .replace(
+            "# services",
+            "  <scd4x id=\"air\" i2c_component=\"$sensor_bus\" />\n# services",
+        );
+        let board = lower_src(&src).expect("one bus, two devices");
+        assert_eq!(board.devices.len(), 2);
+        assert_eq!(board.driver_features(), ["ssd1306", "scd4x"]);
+        let buses: Vec<&str> = board
+            .components
+            .iter()
+            .map(|component| component.id().raw.as_str())
+            .collect();
+        assert_eq!(buses, ["oled_bus", "sensor_bus"]);
+    }
+
+    /// A driver takes an `I2cDevice`, so its component must declare an
+    /// address: a bus-only component would emit code that does not compile.
+    #[test]
+    fn a_display_needs_an_addressed_component() {
+        let src = OLED.replace(" address=\"0x3C\"", "");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_INVALID);
+        assert_eq!(errors[0].message, "display needs an i2c address");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<ssd1306 id=\"oled\"> needs <i2c_component id=\"oled_bus\"> to declare an `address`; it is a bus-only component"
+        );
+    }
+
+    /// A fixed-address part names its address when the component has none.
+    #[test]
+    fn a_sensor_needs_an_addressed_component() {
+        let src = OLED
+            .replace(
+                "<ssd1306 id=\"oled\" i2c_component=\"$oled_bus\" size=\"128x32\" rotation=\"180\" />",
+                "<scd4x id=\"air\" i2c_component=\"$oled_bus\" />",
+            )
+            .replace(" address=\"0x3C\"", "");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_INVALID);
+        assert_eq!(errors[0].message, "sensor needs an i2c address");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<scd4x id=\"air\"> needs <i2c_component id=\"oled_bus\"> to declare an `address` (this part is at 0x62); it is a bus-only component"
+        );
+    }
+
+    /// A component on the wrong address for a fixed-address part is a wiring
+    /// error, and only lowering can see it.
+    #[test]
+    fn a_sensor_on_another_address_is_refused() {
+        let src = OLED
+            .replace(
+                "<ssd1306 id=\"oled\" i2c_component=\"$oled_bus\" size=\"128x32\" rotation=\"180\" />",
+                "<scd4x id=\"air\" i2c_component=\"$oled_bus\" />",
+            )
+            .replace("address=\"0x3C\"", "address=\"0x48\"");
+        let errors = lower_src(&src).unwrap_err();
+        assert_eq!(errors[0].code, codes::DEVICE_INVALID);
+        assert_eq!(errors[0].message, "sensor address mismatch");
+        assert_eq!(
+            errors[0].labels[0].text,
+            "<scd4x id=\"air\"> is fixed at address 0x62, but <i2c_component id=\"oled_bus\"> declares 0x48"
+        );
+    }
+
+    /// The display picks any address: 0x3D is a common alternate strap.
+    #[test]
+    fn a_display_on_another_address_lowers() {
+        let board = lower_src(&OLED.replace("address=\"0x3C\"", "address=\"0x3D\""))
+            .expect("the panel address is the project's to choose");
+        assert_eq!(board.devices.len(), 1);
     }
 
     #[test]

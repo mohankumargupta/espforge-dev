@@ -62,7 +62,6 @@ impl Element for I2c {
             sda,
             scl,
             khz,
-            used_by: None,
         });
         Ok(())
     }

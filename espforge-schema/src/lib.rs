@@ -179,6 +179,12 @@ pub struct DeviceRecipe {
     pub deps: Vec<String>,
     /// The value slots, in constructor argument order.
     pub args: Vec<DeviceArg>,
+    /// What the device needs of the I2C address its component declares.
+    ///
+    /// `None` for a device on a non-I2C bus or one that takes a raw bus;
+    /// `Any` when the project's `.espf` chooses the address; `Fixed` when the
+    /// part answers at one address only.
+    pub address: AddressNeed,
     /// Span of the `device_recipe` node in the schema text.
     pub span: Range<usize>,
 }
@@ -200,6 +206,25 @@ pub struct DeviceArg {
     /// Span of the `arg` node in the schema text.
     pub span: Range<usize>,
 }
+
+/// What a device needs of the I2C address of the component it binds.
+///
+/// The address itself always lives on the `<i2c_component>`: this says only
+/// whether the device needs one, and whether the part fixes its value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressNeed {
+    /// The device does not need an address (an SPI device).
+    None,
+    /// Any usable address; the project's `.espf` decides (a display).
+    Any,
+    /// The part's own fixed address; a component declaring another is a
+    /// wiring error.
+    Fixed(u8),
+}
+
+/// The usable 7-bit I2C addresses: the specification reserves `0x00..=0x07`
+/// (general call, CBUS) and `0x78..=0x7F` (10-bit prefixes, reserved).
+pub const USABLE_I2C_ADDRESSES: std::ops::RangeInclusive<u8> = 0x08..=0x77;
 
 /// Which way a recipe's pin is driven.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1044,6 +1069,8 @@ fn parse_device_recipe(
         .iter()
         .any(|child| child.name().value() == "takes_bus");
 
+    let address = parse_needs_address(node, errors);
+
     let taken = child_string(node, "taken", errors).map(|(taken, _)| taken);
     let mut deps: Vec<String> = Vec::new();
     for child in children(node) {
@@ -1056,12 +1083,14 @@ fn parse_device_recipe(
     for child in children(node) {
         match child.name().value() {
             // The scalars were collected above, by name.
-            "bus" | "feature" | "kind" | "type" | "new" | "takes_bus" | "taken" | "deps" => {}
+            "bus" | "feature" | "kind" | "type" | "new" | "takes_bus" | "taken" | "deps"
+            | "needs_address" => {}
             "arg" => parse_device_arg(child, tag, attrs, &mut args, errors),
             other => errors.push(err(
                 node_range(child),
                 format!("unknown node `{other}` in `device_recipe` of `{tag}`"),
-                "expected bus, feature, kind, type, new, takes_bus, taken, deps or arg",
+                "expected bus, feature, kind, type, new, takes_bus, taken, deps, needs_address or \
+                 arg",
             )),
         }
     }
@@ -1103,8 +1132,67 @@ fn parse_device_recipe(
         taken,
         deps,
         args,
+        address,
         span,
     })
+}
+
+/// Parse the `needs_address` child of a `device_recipe`, which is optional.
+///
+/// Bare (`needs_address`) means the project's `.espf` picks any usable
+/// address; with a value (`needs_address "0x62"`) the part fixes it. A value
+/// outside [`USABLE_I2C_ADDRESSES`] is a load error, with its own span.
+fn parse_needs_address(node: &KdlNode, errors: &mut Vec<SchemaError>) -> AddressNeed {
+    let mut seen: Option<&KdlNode> = None;
+    for child in children(node) {
+        if child.name().value() != "needs_address" {
+            continue;
+        }
+        if seen.is_some() {
+            errors.push(err(
+                node_range(child),
+                "`needs_address` given twice",
+                "keep one",
+            ));
+            continue;
+        }
+        seen = Some(child);
+    }
+    let Some(child) = seen else {
+        return AddressNeed::None;
+    };
+
+    let values = positional_strings(child, errors);
+    match values.as_slice() {
+        [] => AddressNeed::Any,
+        [(text, at)] => match hex_byte(text) {
+            Some(address) if USABLE_I2C_ADDRESSES.contains(&address) => AddressNeed::Fixed(address),
+            _ => {
+                errors.push(err(
+                    at.clone(),
+                    format!("`{text}` is not a usable I2C address"),
+                    "write a 7-bit address in 0x08..=0x77, for example `0x62`",
+                ));
+                AddressNeed::None
+            }
+        },
+        _ => {
+            errors.push(err(
+                node_range(child),
+                "`needs_address` takes one address",
+                "write `needs_address` or `needs_address \"0x62\"`",
+            ));
+            AddressNeed::None
+        }
+    }
+}
+
+/// A `0x..` or decimal byte.
+fn hex_byte(text: &str) -> Option<u8> {
+    match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        Some(hex) => u8::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
 }
 
 /// The first positional string of the child node `name`, with its span.
@@ -2209,5 +2297,80 @@ element "gpio" section="peripherals" {
             "    recipe pin=\"gpio\" direction=\"output\" runtime=\"espforge_runtime::Led\" invalid=\"E0601\"\n    recipe pin=\"gpio\" direction=\"output\" runtime=\"espforge_runtime::Led\"\n",
         );
         assert_eq!(only_message(&src), "`recipe` given twice");
+    }
+
+    /// A schema with one bus component and one device over it.
+    const DEVICE_RECIPE: &str = r##"
+section "components" { summary "s"; description "d" }
+section "devices" { summary "s"; description "d" }
+element "i2c_component" section="components" {
+    summary "An address on a bus"
+    attr "id" kind="ident" required=#true
+    attr "address" kind="hex"
+    example "minimal" #"<i2c_component id="bus" address="0x3C" />"#
+}
+element "sensor" section="devices" {
+    summary "A sensor"
+    device_recipe {
+        bus "i2c_component"
+        feature "sensor"
+        kind "sensor"
+        type "espforge_drivers::Sensor"
+        new "espforge_drivers::Sensor::new"
+        needs_address "0x62"
+    }
+    attr "id" kind="ident" required=#true
+    attr "i2c_component" kind="ref" to="i2c_component" required=#true
+    example "minimal" #"<sensor id="air" i2c_component="$bus" />"#
+}
+"##;
+
+    #[test]
+    fn needs_address_parses_bare_and_with_a_fixed_value() {
+        let schema = load(DEVICE_RECIPE).unwrap();
+        let recipe = schema
+            .element("sensor")
+            .unwrap()
+            .device_recipe
+            .as_ref()
+            .unwrap();
+        assert_eq!(recipe.address, AddressNeed::Fixed(0x62));
+
+        // Bare: any usable address the `.espf` declares.
+        let src = DEVICE_RECIPE.replace(" needs_address \"0x62\"", " needs_address");
+        let schema = load(&src).unwrap();
+        let recipe = schema
+            .element("sensor")
+            .unwrap()
+            .device_recipe
+            .as_ref()
+            .unwrap();
+        assert_eq!(recipe.address, AddressNeed::Any);
+
+        // Absent: the device takes whatever handle it is given.
+        let src = DEVICE_RECIPE.replace("        needs_address \"0x62\"\n", "");
+        let schema = load(&src).unwrap();
+        let recipe = schema
+            .element("sensor")
+            .unwrap()
+            .device_recipe
+            .as_ref()
+            .unwrap();
+        assert_eq!(recipe.address, AddressNeed::None);
+    }
+
+    #[test]
+    fn a_reserved_fixed_address_is_refused() {
+        let src = DEVICE_RECIPE.replace("\"0x62\"", "\"0x7F\"");
+        assert_eq!(only_message(&src), "`0x7F` is not a usable I2C address");
+    }
+
+    #[test]
+    fn a_second_needs_address_is_refused() {
+        let src = DEVICE_RECIPE.replace(
+            "        needs_address \"0x62\"\n",
+            "        needs_address \"0x62\"\n        needs_address \"0x62\"\n",
+        );
+        assert_eq!(only_message(&src), "`needs_address` given twice");
     }
 }

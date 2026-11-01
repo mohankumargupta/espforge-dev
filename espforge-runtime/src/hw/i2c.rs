@@ -226,3 +226,138 @@ impl embedded_hal_async::i2c::I2c for I2cBus<Async> {
         I2cBus::transaction(self, address, operations).await
     }
 }
+
+// ---------------------------------------------------------------------------
+// An addressed endpoint on a shared bus
+// ---------------------------------------------------------------------------
+
+/// An addressed endpoint on a shared I2C bus.
+///
+/// The address comes from `<i2c_component address="..">`, so the project file
+/// stays the single source of truth: neither `app.rs` nor a driver re-types it.
+/// Reads and writes take no address because this handle already knows its
+/// target, and several `I2cDevice`s on one controller are the normal
+/// multi-drop case.
+///
+/// When this handle is used through the `embedded-hal` `I2c` traits (what a
+/// third-party driver such as the SSD1306 crate does), the address the driver
+/// passes is **ignored** and [`address`](Self::address) is used instead. One
+/// handle therefore drives exactly one part.
+pub struct I2cDevice<Dm: DriverMode + 'static> {
+    bus: I2cBus<Dm>,
+    address: u8,
+}
+
+impl<Dm: DriverMode + 'static> Clone for I2cDevice<Dm> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Dm: DriverMode + 'static> Copy for I2cDevice<Dm> {}
+
+impl<Dm: DriverMode + 'static> I2cDevice<Dm> {
+    /// Wrap `bus`, targeting the 7-bit slave `address`.
+    pub fn new(bus: I2cBus<Dm>, address: u8) -> Self {
+        Self { bus, address }
+    }
+
+    /// The 7-bit address this endpoint talks to, as configured in `.espf`.
+    pub fn address(&self) -> u8 {
+        self.address
+    }
+
+    /// The raw, unaddressed bus this device rides on.
+    pub fn bus(&self) -> I2cBus<Dm> {
+        self.bus
+    }
+}
+
+#[cfg(not(feature = "embassy"))]
+impl I2cDevice<Blocking> {
+    /// Write `bytes` to this device's address.
+    pub fn write(&self, bytes: &[u8]) -> Result<(), I2cError> {
+        self.bus.write(self.address, bytes)
+    }
+
+    /// Read into `buf` from this device's address.
+    pub fn read(&self, buf: &mut [u8]) -> Result<(), I2cError> {
+        self.bus.read(self.address, buf)
+    }
+
+    /// Write `write`, then read into `read`, in one transaction.
+    pub fn write_read(&self, write: &[u8], read: &mut [u8]) -> Result<(), I2cError> {
+        self.bus.write_read(self.address, write, read)
+    }
+
+    /// Run a sequence of operations against this device's address.
+    pub fn transaction(
+        &self,
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
+    ) -> Result<(), I2cError> {
+        self.bus.transaction(self.address, operations)
+    }
+}
+
+#[cfg(not(feature = "embassy"))]
+impl embedded_hal::i2c::ErrorType for I2cDevice<Blocking> {
+    type Error = I2cError;
+}
+
+/// The address a driver passes is ignored: this handle talks to the address
+/// configured in `.espf`. The trait's provided `read`/`write`/`write_read`
+/// route through `transaction`, so they inherit that contract.
+#[cfg(not(feature = "embassy"))]
+impl embedded_hal::i2c::I2c for I2cDevice<Blocking> {
+    fn transaction(
+        &mut self,
+        _address: u8,
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
+    ) -> Result<(), Self::Error> {
+        I2cDevice::transaction(self, operations)
+    }
+}
+
+#[cfg(feature = "embassy")]
+impl I2cDevice<Async> {
+    /// Write `bytes` to this device's address.
+    pub async fn write(&self, bytes: &[u8]) -> Result<(), I2cError> {
+        self.bus.write(self.address, bytes).await
+    }
+
+    /// Read into `buf` from this device's address.
+    pub async fn read(&self, buf: &mut [u8]) -> Result<(), I2cError> {
+        self.bus.read(self.address, buf).await
+    }
+
+    /// Write `write`, then read into `read`, in one transaction.
+    pub async fn write_read(&self, write: &[u8], read: &mut [u8]) -> Result<(), I2cError> {
+        self.bus.write_read(self.address, write, read).await
+    }
+
+    /// Run a sequence of operations against this device's address.
+    pub async fn transaction(
+        &self,
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
+    ) -> Result<(), I2cError> {
+        self.bus.transaction(self.address, operations).await
+    }
+}
+
+#[cfg(feature = "embassy")]
+impl embedded_hal::i2c::ErrorType for I2cDevice<Async> {
+    type Error = I2cError;
+}
+
+/// The address a driver passes is ignored: this handle talks to the address
+/// configured in `.espf`.
+#[cfg(feature = "embassy")]
+impl embedded_hal_async::i2c::I2c for I2cDevice<Async> {
+    async fn transaction(
+        &mut self,
+        _address: u8,
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
+    ) -> Result<(), Self::Error> {
+        I2cDevice::transaction(self, operations).await
+    }
+}

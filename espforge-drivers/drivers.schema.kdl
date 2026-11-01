@@ -15,6 +15,9 @@
 //   new "<path>"        the constructor, called with the bus and every `arg`
 //   takes_bus           the device takes the bus component by value
 //   taken "<text>"      the message when that bus was already taken
+//   needs_address       an `i2c_component` that must declare any address
+//   needs_address "0x62"    the part's fixed address: a component declaring
+//                       another one is a wiring error
 //   deps "<crate>"      a crate the generated project must name
 //   arg "<attr>" {      a `map` slot: every value the attribute allows to the
 //       map ".." ".."   Rust expression it emits
@@ -36,6 +39,8 @@ element "ssd1306" section="devices" {
         kind "display"
         type "espforge_drivers::Ssd1306Display<{size}>"
         new "espforge_drivers::Ssd1306Display::new"
+        // Any panel address: 0x3C and 0x3D are both common on this part.
+        needs_address
         deps "embedded-graphics"
         arg "size" {
             map "128x64" "espforge_drivers::Oled128x64"
@@ -128,6 +133,8 @@ element "scd4x" section="devices" {
         kind "sensor"
         type "espforge_drivers::Scd4x"
         new "espforge_drivers::Scd4x::new"
+        // The part answers at one address only.
+        needs_address "0x62"
     }
     attr "id" kind="ident" required=#true
     attr "i2c_component" kind="ref" to="i2c_component" required=#true {

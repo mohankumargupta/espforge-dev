@@ -205,15 +205,19 @@ element "button" section="components" {
 }
 
 element "i2c_component" section="components" {
-    summary "A device address on an I2C bus"
+    summary "An addressed device endpoint or raw bus handle on an I2C controller"
+    description #"I2C is multi-drop: several components may share one <i2c>. With address="0x3C" the component is an addressed device (I2cDevice); without one it is the raw bus (I2cBus), which an I2C scanner sweeps."#
     attr "id" kind="ident" required=#true
-    attr "i2c" kind="ref" to="i2c" required=#true
-    // Optional: a bus-level component (an I2C scanner) has no one address;
-    // a driver that talks to a fixed part may still declare it.
-    attr "address" kind="hex" {
-        help "Omit for a bus-only component (for example an I2C scanner)."
+    attr "i2c" kind="ref" to="i2c" required=#true {
+        help "The I2C bus controller in `# peripherals`."
     }
-    example "temperature sensor" #"<i2c_component id="temp_bus" i2c="$i2c0" address="0x48" />"#
+    // The specification reserves 0x00..=0x07 and 0x78..=0x7F; a usable 7-bit
+    // address is 0x08..=0x77. Omitted, the component is the raw bus.
+    attr "address" kind="hex" {
+        help "7-bit slave address in 0x08..=0x77. Omit for raw bus access (an I2C scanner)."
+    }
+    example "sensor endpoint" #"<i2c_component id="temp_bus" i2c="$i2c0" address="0x48" />"#
+    example "raw scanner" #"<i2c_component id="bus_scanner" i2c="$i2c0" />"#
     see_also "peripherals/i2c"
 }
 

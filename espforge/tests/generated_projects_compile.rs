@@ -111,6 +111,14 @@ const CASES: &[Case] = &[
         runtime: Runtime::Blocking,
         inline: None,
     },
+    // The raw `I2cBus` shape: an unaddressed component is the bus itself, so
+    // the scanner is a different emitted field from every addressed one.
+    Case {
+        example: "04.Communication/i2c_scanner",
+        chip: "esp32c3",
+        runtime: Runtime::Blocking,
+        inline: None,
+    },
     Case {
         example: "04.Communication/i2c_example_async",
         chip: "esp32c3",
@@ -188,6 +196,29 @@ const CASES: &[Case] = &[
         chip: "esp32c3",
         runtime: Runtime::Blocking,
         inline: None,
+    },
+    // Multi-drop: a display and a sensor on one `<i2c>`, each at its own
+    // address. It is the only case that takes two `I2cDevice`s on one
+    // controller through `rustc`; the display's app supplies the logic.
+    Case {
+        example: "06.Displays/ssd1306",
+        chip: "esp32c3",
+        runtime: Runtime::Blocking,
+        inline: Some(
+            "# espforge\n\
+             \x20 <project name=\"i2c_multidrop\" />\n\
+             \x20 <chip type=\"esp32c3\" />\n\
+             \x20 <runtime type=\"blocking\" />\n\
+             # peripherals\n\
+             \x20 <i2c id=\"i2c0\" sda=\"6\" scl=\"7\" frequency=\"400kHz\" />\n\
+             # components\n\
+             \x20 <i2c_component id=\"display_bus\" i2c=\"$i2c0\" address=\"0x3C\" />\n\
+             \x20 <i2c_component id=\"sensor_bus\" i2c=\"$i2c0\" address=\"0x62\" />\n\
+             # devices\n\
+             \x20 <ssd1306 id=\"oled\" i2c_component=\"$display_bus\" size=\"128x64\" />\n\
+             \x20 <scd4x id=\"air\" i2c_component=\"$sensor_bus\" />\n\
+             # services\n",
+        ),
     },
 ];
 

@@ -124,8 +124,6 @@ codes! {
     COMPONENT_WRONG_DIRECTION = "E0609";
     /// A `<uart_component baud_rate="0">`.
     COMPONENT_INVALID_BAUD = "E0610";
-    /// A second `<i2c_component>` on one `<i2c>` bus.
-    COMPONENT_I2C_BUS_USED = "E0611";
     /// A second `<uart_component>` on one `<uart>` port.
     COMPONENT_UART_USED = "E0612";
     /// A bus component referring to a bus that does not exist.
@@ -164,6 +162,8 @@ codes! {
     CONFLICT_SPI_WIRING = "E0706";
     /// A `<uart>` that puts tx and rx on one pin.
     CONFLICT_UART_WIRING = "E0707";
+    /// Two addressed `<i2c_component>`s on one `<i2c>` bus sharing an address.
+    CONFLICT_I2C_ADDRESS = "E0708";
 
     /// A service `network=` reference to an interface that does not exist.
     SERVICE_UNKNOWN_NETWORK = "E0801";
@@ -243,7 +243,7 @@ mod tests {
                         | 306..=315
                         | 501..=515
                         | 601..=622
-                        | 701..=707
+                        | 701..=708
                         | 801..=806
                         | 901..=907
                 ),

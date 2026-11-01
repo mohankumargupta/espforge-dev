@@ -5,7 +5,7 @@ use embedded_graphics::{
     Pixel, draw_target::DrawTarget, geometry::Size, prelude::OriginDimensions,
 };
 use esp_hal::Blocking;
-use espforge_runtime::I2cBus;
+use espforge_runtime::I2cDevice;
 use ssd1306::mode::DisplayConfig;
 
 pub use ssd1306::prelude::{
@@ -15,7 +15,7 @@ pub use ssd1306::prelude::{
 /// The rotation of an OLED panel, re-exported so generated code names only
 /// this crate.
 type Oled<SIZE> = ssd1306::Ssd1306<
-    ssd1306::prelude::I2CInterface<I2cBus<Blocking>>,
+    ssd1306::prelude::I2CInterface<I2cDevice<Blocking>>,
     SIZE,
     ssd1306::mode::BufferedGraphicsMode<SIZE>,
 >;
@@ -29,9 +29,14 @@ pub struct Ssd1306Display<SIZE: ssd1306::prelude::DisplaySize> {
 }
 
 impl<SIZE: ssd1306::prelude::DisplaySize> Ssd1306Display<SIZE> {
-    /// Build the panel on `bus` and run its initialization sequence.
-    pub fn new(bus: I2cBus<Blocking>, size: SIZE, rotation: DisplayRotation) -> Self {
-        let interface = ssd1306::I2CDisplayInterface::new(bus);
+    /// Build the panel on `device` and run its initialization sequence.
+    ///
+    /// The panel talks to the address the component declares in `.espf`: the
+    /// `ssd1306` crate passes its own default (`0x3C`) into this handle, and
+    /// [`I2cDevice`] ignores a caller-supplied address in favour of the
+    /// configured one. A panel wired to `0x3D` therefore works as declared.
+    pub fn new(device: I2cDevice<Blocking>, size: SIZE, rotation: DisplayRotation) -> Self {
+        let interface = ssd1306::I2CDisplayInterface::new(device);
         let mut display =
             ssd1306::Ssd1306::new(interface, size, rotation).into_buffered_graphics_mode();
         display.init().expect("SSD1306 OLED initialization failed");
