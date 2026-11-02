@@ -6,8 +6,8 @@
 //!
 //! A service is data as much as a component or a device is: its type, its
 //! constructor, its config fields and its feature all come from a
-//! `service_recipe` in `espf.schema.kdl`, so adding one edits the runtime and
-//! the schema, never this crate. [`recipe`] is the interpreter; the wording of
+//! `service_recipe` in `services.schema.kdl`, so adding one edits the runtime
+//! and the schema, never this crate. [`recipe`] is the interpreter; the wording of
 //! the diagnostics it can report lives here, so every service says "unknown
 //! network" the same way.
 

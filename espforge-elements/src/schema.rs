@@ -1,10 +1,11 @@
-//! The composed schema: the core vocabulary plus the drivers' own devices.
+//! The composed schema: the core vocabulary, its services and the drivers'
+//! own devices.
 //!
-//! `espforge-schema` owns `espf.schema.kdl`; `espforge-drivers` owns
-//! `drivers.schema.kdl` beside its drivers. Neither crate reaches into the
-//! other's package, so both stay publishable: composing is this crate's job,
-//! and every consumer here goes through [`schema`] rather than parsing its own
-//! subset.
+//! `espforge-schema` owns `espf.schema.kdl` and the `services.schema.kdl`
+//! beside it; `espforge-drivers` owns `drivers.schema.kdl` beside its drivers.
+//! Neither crate reaches into the other's package, so both stay publishable:
+//! composing is this crate's job, and every consumer here goes through
+//! [`schema`] rather than parsing its own subset.
 
 use espforge_schema::Schema;
 use std::sync::LazyLock;
@@ -17,6 +18,7 @@ pub fn schema() -> &'static Schema {
     static SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         espforge_schema::load_all(&[
             espforge_schema::SCHEMA_KDL,
+            espforge_schema::SERVICES_SCHEMA_KDL,
             espforge_drivers::DRIVERS_SCHEMA_KDL,
         ])
         .unwrap_or_else(|errors| {

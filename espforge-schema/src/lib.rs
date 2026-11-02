@@ -1,9 +1,12 @@
-//! The schema: one file, one loader.
+//! The schema: one loader over the core file and its fragments.
 //!
 //! `espf.schema.kdl` is the single source of truth for what an ESPF file may
 //! contain (sections, elements, attributes, examples) and for the build
-//! options it can turn on. This crate owns the only code in the workspace that
-//! walks KDL; everything else reads the typed model it produces.
+//! options it can turn on. The `# services` elements live beside it in
+//! `services.schema.kdl`, and the `# devices` elements live beside their
+//! drivers in `espforge-drivers/drivers.schema.kdl`; [`load_all`] composes the
+//! fragments into one schema. This crate owns the only code in the workspace
+//! that walks KDL; everything else reads the typed model it produces.
 //!
 //! ```kdl
 //! section "peripherals" {
@@ -31,8 +34,16 @@ use kdl::{KdlDocument, KdlEntry, KdlNode};
 use std::ops::Range;
 use std::sync::LazyLock;
 
-/// The schema text, embedded at compile time.
+/// The core schema text, embedded at compile time.
 pub const SCHEMA_KDL: &str = include_str!("espf.schema.kdl");
+
+/// The `# services` elements, embedded at compile time.
+///
+/// A service element carries a `service_recipe` rather than a Rust file, so its
+/// schema is the whole of its specification; keeping it in its own file keeps
+/// the core vocabulary readable. Parse it with [`SCHEMA_KDL`], which declares
+/// the `services` section it names.
+pub const SERVICES_SCHEMA_KDL: &str = include_str!("services.schema.kdl");
 
 /// The one schema instance, parsed on first use.
 ///
@@ -40,7 +51,7 @@ pub const SCHEMA_KDL: &str = include_str!("espf.schema.kdl");
 /// the workspace's own tests parse it before it can ever be shipped.
 pub fn schema() -> &'static Schema {
     static SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
-        load(SCHEMA_KDL).unwrap_or_else(|errors| {
+        load_all(&[SCHEMA_KDL, SERVICES_SCHEMA_KDL]).unwrap_or_else(|errors| {
             let mut text = String::from("espf.schema.kdl does not load:");
             for error in errors {
                 text.push_str(&format!("\n  {}: {}", error.span.start, error.message));
@@ -516,10 +527,11 @@ fn children(node: &KdlNode) -> &[KdlNode] {
     node.children().map(|c| c.nodes()).unwrap_or(&[])
 }
 
-/// Parse `espf.schema.kdl` text. All problems are reported, each with the byte
-/// span of the offending KDL node or argument. Checks include reserved names,
-/// tag uniqueness across sections, every `to=` and `see_also` target, and that
-/// every element has a summary and at least one example.
+/// Parse one schema source, such as `espf.schema.kdl`. All problems are
+/// reported, each with the byte span of the offending KDL node or argument.
+/// Checks include reserved names, tag uniqueness across sections, every `to=`
+/// and `see_also` target, and that every element has a summary and at least one
+/// example.
 pub fn load(src: &str) -> Result<Schema, Vec<SchemaError>> {
     load_all(&[src])
 }
