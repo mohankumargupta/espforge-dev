@@ -140,16 +140,22 @@ impl HttpsClient {
         write_request(&mut tls, method, host, path, body, content_length).await?;
 
         // Response: read until the peer closes, then strip the header block.
+        //
+        // `embedded-tls` reports the peer's close as an *error* from `read`
+        // (`TlsError::ConnectionClosed` for the close_notify record, `IoError`
+        // once the socket is at EOF), never as a zero-length read. With
+        // `Connection: close` that close is how the body ends, so bytes that
+        // arrived before the error are a complete response — only an error
+        // with nothing collected is a real read failure.
         let mut read = 0;
         loop {
+            if read == rx_buf.len() {
+                break;
+            }
             match tls.read(&mut rx_buf[read..]).await {
                 Ok(0) => break,
-                Ok(n) => {
-                    read += n;
-                    if read == rx_buf.len() {
-                        break;
-                    }
-                }
+                Ok(n) => read += n,
+                Err(_) if read > 0 => break,
                 Err(_) => return Err(HttpError::Read),
             }
         }
