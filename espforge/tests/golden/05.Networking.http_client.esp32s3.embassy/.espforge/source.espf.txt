@@ -1,9 +1,9 @@
 ====================
 HTTP CLIENT EXAMPLE
 
-Connects to Wi-Fi, then GETs a URL every few seconds with the `<http_client>`
-service and logs the response body. The client is unencrypted HTTP/1.1 over
-the station's network stack.
+Connects to Wi-Fi, then GETs http://httpbin.org/robots.txt every few seconds
+with the `<http_client>` service and logs the response body. The client is
+unencrypted HTTP/1.1 over the station's network stack.
 ====================
 
 # espforge

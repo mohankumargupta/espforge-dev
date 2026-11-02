@@ -13,10 +13,14 @@ pub async fn forever(ctx: &'static Context) {
     let client = service!(ctx, client);
     let mut rx_buf = [0u8; 1024];
 
-    match client.get("http://example.com/", &mut rx_buf).await {
+    match client
+        .get("http://httpbin.org/robots.txt", &mut rx_buf)
+        .await
+    {
         Ok(body) => {
             if let Ok(text) = core::str::from_utf8(body) {
-                ctx.logger.info(format_args!("GET ok, {} bytes: {text}", body.len()));
+                ctx.logger
+                    .info(format_args!("GET ok, {} bytes: {text}", body.len()));
             }
         }
         Err(e) => ctx.logger.warn(format_args!("GET failed: {e:?}")),
